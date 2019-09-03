@@ -1,0 +1,1106 @@
+#------------------------------ Hydroxymethylation at enhancers in PD neurons
+
+#------------------------------ Alignment
+
+#--------  Fastq_merge
+
+qsubs --names fastq_merge --array names --cmd "cat fastq/SAMPLE_001.fastq.gz fastq/SAMPLE_002.fastq.gz > fastq_merge/SAMPLE.fastq.gz"
+
+#-------- FastQC
+
+module load fastqc/0.11.5
+qsubs --names fastqc_dna --array names --cmd "fastqc --outdir fastqc fastq/SAMPLE_001.fastq.gz"
+qsubs --names fastqc_dna --array names --cmd "fastqc --outdir fastqc fastq/SAMPLE_002.fastq.gz"
+qsubs --names fastqc_dna --array names --cmd "fastqc --outdir fastqc fastq_merge/SAMPLE.fastq.gz"
+
+#-------- Trimgalore
+
+module load trimgalore/0.4.4
+qsubs --names trimgalore_chip --array names --cmd "trim_galore --fastqc --output_dir trimgalore fastq_merge/SAMPLE.fastq.gz"
+
+#-------- Index
+
+module load bowtie2/2.3.1
+qsubs --names bowtie2_index --cores 28 --cmd "bowtie2-build --threads 28 -f ../Ensembl_GRCh37_p13_Unmasked_noscaffolds.fa"
+
+#-------- BOWTIE2
+
+module load bowtie2/2.3.1
+qsubs --names bowtie2_chip --cores 4 --array names --cmd "bowtie2 --threads 4 -x ~/labrie-primary/Bioinformatics_core/genomes/Human/Ensembl_GRCh37_p13_Unmasked_noscaffolds/bowtie2_genome/bowtie2 
+-U trimgalore/SAMPLE_trimmed.fq.gz -S bowtie2/SAMPLE_bowtie2.sam"
+
+#------------------------------ Processing
+
+#-------- PICARD sort
+
+qsubs --names picard_samsort --array names --cmd "picard SortSam I=bowtie2/SAMPLE_bowtie2.sam O=bowtie2/SAMPLE_bowtie2_sorted.bam SORT_ORDER=coordinate"
+
+#-------- SAMTOOLS index
+
+qsubs --names samtools_index --array names --cmd "samtools index bowtie2/SAMPLE_bowtie2_sorted.bam"
+
+#-------- PICARD markdup
+
+qsubs --names picard_MarkDuplicates --array names --cmd "picard MarkDuplicates I=bowtie2/SAMPLE_bowtie2_sorted.bam O=bowtie2/SAMPLE_bowtie2_sorted_markdup.bam M=bowtie2/SAMPLE_bowtie2_sorted_markdup_metrics.txt"
+
+#-------- SAMTOOLS stats
+
+qsubs --names samtools_stats --array names --cmd "samtools stats bowtie2/SAMPLE_bowtie2_sorted_markdup.bam > bowtie2/SAMPLE_bwa_sorted_markdup.stats.qc"
+qsubs --names samtools_flagstat --array names --cmd "samtools flagstat bowtie2/SAMPLE_bowtie2_sorted_markdup.bam > bowtie2/SAMPLE_bwa_sorted_markdup.flagstat.qc"
+
+#-------- SAMTOOLS Filter - read unmapped, mate unmapped, not primary alignment, read fails platform, read is PCR or optical duplicate https://broadinstitute.github.io/picard/explain-flags.html
+
+qsubs --names samtools_filter --array names --cmd "samtools view -F 1804 -q 30 bowtie2/SAMPLE_bowtie2_sorted_markdup.bam -o bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.bam"
+
+#-------- SAMTOOLS stats
+
+qsubs --names samtools_stats --array names --cmd "samtools stats bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.bam > bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.stats.qc"
+
+qsubs --names samtools_flagstat --array names --cmd "samtools flagstat bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.bam > bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.flagstat.qc"
+
+#-------- SAMTOOLS index
+
+qsubs --names samtools_index --array names --cmd "samtools index bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.bam"
+
+#-------- DEEPTOOLS
+
+qsubs --names deeptools_bamCoverage --cores 4 --array names --cmd "bamCoverage -b bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.bam -o deeptools/SAMPLE_bowtie2_sorted_markdup_filtered_cpm.bigWig -p 4 --normalizeUsing CPM --ignoreDuplicates"
+qsubs --names deeptools_multiBamSummary --cores 28 --cmd "multiBamSummary bins -b bowtie2/*_bowtie2_sorted_markdup_filtered.bam -o deeptools/bowtie2_sorted_markdup_filtered.npz -p 28 --ignoreDuplicates"
+qsubs --names deeptools_plotCorrelation --cmd "plotCorrelation -in deeptools/bowtie2_sorted_markdup_filtered.npz --corMethod pearson --skipZeros --plotTitle Pearson_Correlation_of_Read_Counts --whatToPlot heatmap --colorMap RdYlBu --plotNumbers -o deeptools/bowtie2_sorted_markdup_filtered_PearsonCorr_readCounts.png --outFileCorMatrix deeptools/bowtie2_sorted_markdup_filtered_PearsonCorr_readCounts.tab"
+qsubs --names deeptools_plotPCA --cmd "plotPCA -in deeptools/bowtie2_sorted_markdup_filtered.npz -o deeptools/bowtie2_sorted_markdup_filtered_PCA_readCounts.png -T PCA_read_counts"
+
+#-------- Merge Replicates
+
+qsubs --names picard_MergeSamFiles --cmd "picard MergeSamFiles I=bowtie2/rep/120_L000_R1_bowtie2_sorted_markdup_filtered.bam I=bowtie2/rep/120A_L000_R1_bowtie2_sorted_markdup_filtered.bam O=bowtie2/120_L000_R1_bowtie2_sorted_markdup_filtered.bam"
+qsubs --names picard_MergeSamFiles --cmd "picard MergeSamFiles I=bowtie2/rep/149_L000_R1_bowtie2_sorted_markdup_filtered.bam I=bowtie2/rep/149A_L000_R1_bowtie2_sorted_markdup_filtered.bam O=bowtie2/149_L000_R1_bowtie2_sorted_markdup_filtered.bam"
+qsubs --names picard_MergeSamFiles --cmd "picard MergeSamFiles I=bowtie2/rep/173_L000_R1_bowtie2_sorted_markdup_filtered.bam I=bowtie2/rep/173A_L000_R1_bowtie2_sorted_markdup_filtered.bam O=bowtie2/173_L000_R1_bowtie2_sorted_markdup_filtered.bam"
+qsubs --names picard_MergeSamFiles --cmd "picard MergeSamFiles I=bowtie2/rep/42A_L000_R1_bowtie2_sorted_markdup_filtered.bam I=bowtie2/rep/42B_L000_R1_bowtie2_sorted_markdup_filtered.bam O=bowtie2/42_L000_R1_bowtie2_sorted_markdup_filtered.bam"
+qsubs --names picard_MergeSamFiles --cmd "picard MergeSamFiles I=bowtie2/rep/146input_L000_R1_bowtie2_sorted_markdup_filtered.bam I=bowtie2/rep/17input_L000_R1_bowtie2_sorted_markdup_filtered.bam O=bowtie2/input_L000_R1_bowtie2_sorted_markdup_filtered.bam"
+
+#-------- DEEPTOOLS
+
+qsubs --names deeptools_plotFingerprint --cores 28 --cmd plotFingerprint -p 28 -b \
+bowtie2/input_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/rep/146input_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/rep/17input_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+--labels Input 146input 17input \
+--skipZeros --region 1 -T Fingerprints_of_chr1 \
+--plotFile deeptools/Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.png \
+--outRawCounts deeptools/Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.tab
+
+qsubs --names deeptools_plotFingerprint --cores 28 --cmd plotFingerprint -p 28 -b \
+bowtie2/input_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/166_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/149_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/194_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/32_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/22_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/57_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/173_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/176_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/36_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+--labels Input 166 149 194 32 22 57 173 176 36 \
+--skipZeros --region 1 -T Fingerprints_of_chr1 \
+--plotFile deeptools/CTRL_F_Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.png \
+--outRawCounts deeptools/CTRL_F_Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.tab
+
+qsubs --names deeptools_plotFingerprint --cores 28 --cmd plotFingerprint -p 28 -b \
+bowtie2/input_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/50_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/152_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/108_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/184_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/195_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/196_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/201_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/139_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/42_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/45_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/116_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/200_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/162_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/199_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+--labels Input 50 152 108 184 195 196 201 139 42 45 116 200 162 199 \
+--skipZeros --region 1 -T Fingerprints_of_chr1 \
+--plotFile deeptools/CTRL_M_Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.png \
+--outRawCounts deeptools/CTRL_M_Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.tab
+
+qsubs --names deeptools_plotFingerprint --cores 28 --cmd plotFingerprint -p 28 -b \
+bowtie2/input_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/178_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/106_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/31_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/121_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/19_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/70_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/146_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/109_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/120_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+--labels Input 178 106 31 121 19 70 146 109 120 \
+--skipZeros --region 1 -T Fingerprints_of_chr1 \
+--plotFile deeptools/PD_F_Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.png \
+--outRawCounts deeptools/PD_F_Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.tab
+
+qsubs --names deeptools_plotFingerprint --cores 28 --cmd plotFingerprint -p 28 -b \
+bowtie2/input_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/64_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/112_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/68_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/27_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/18_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/23_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/25_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/61_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/169_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/20_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/167_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/24_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+bowtie2/9_L000_R1_bowtie2_sorted_markdup_filtered.bam \
+--labels Input 64 112 68 27 18 23 25 61 169 20 167 24 9 \
+--skipZeros --region 1 -T Fingerprints_of_chr1 \
+--plotFile deeptools/PD_M_Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.png \
+--outRawCounts deeptools/PD_M_Input_bowtie2_sorted_markdup_filtered_chr1_plotFingerprint.tab
+
+#------------------------------ SES Peaks
+
+#-------- Macs2 Predict 
+
+qsubs --name macs2_predictd --array names --cmd "macs2 predictd -i bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.bam -f BAM -g hs -m 5 50 --outdir macs2/predict" 
+
+#-------- Macs2 Pileup
+
+qsubs --name macs2_pileup --cmd "macs2 pileup -i bowtie2/input_L000_R1_bowtie2_sorted_markdup_filtered.bam -f BAM -B --extsize 180 -o macs2/pileup/input_L000_R1_bowtie2_sorted_markdup_filtered.bdg"
+qsubs --name macs2_pileup --array names1 --cmd "macs2 pileup -i bowtie2/SAMPLE_bowtie2_sorted_markdup_filtered.bam -f BAM --extsize 360 -o macs2/pileup/SAMPLE_bowtie2_sorted_markdup_filtered.bdg"
+
+#-------- Normalize inputs to SES scaling factor from Juozas
+
+qsubs --name macs2_bdgopt --array names --test --cmd "macs2 bdgopt -i macs2/pileup/input_L000_R1_bowtie2_sorted_markdup_filtered.bdg -m multiply -p ScalingFactor -o macs2/pileup/SAMPLE_bowtie2_sorted_markdup_filtered_SESinput.bdg"
+
+#-------- Qvalue bed graph
+
+qsubs --name macs2_bdgcmp --array names --cmd "macs2 bdgcmp -t macs2/pileup/SAMPLE_bowtie2_sorted_markdup_filtered.bdg -c macs2/pileup/SAMPLE_bowtie2_sorted_markdup_filtered_SESinput.bdg -m qpois -o macs2/pileup/SAMPLE_bowtie2_sorted_markdup_filtered_SESinput_qvalue.bdg" 
+
+#-------- Call Broad peaks
+
+qsubs --name macs2_bdgbroadcall --array names --cmd "macs2 bdgbroadcall -i macs2/pileup/SAMPLE_bowtie2_sorted_markdup_filtered_SESinput_qvalue.bdg -c 1.301 -l 360 -g 100 -G 1440 -o macs2/bdgbroadcall/SAMPLE_bowtie2_sorted_markdup_filtered_SESinput_bpeaks.bed"
+
+
+#-------- SES Consensus Peaks
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/Lee/macs2/bdgbroadcall")
+library(rtracklayer)
+library(GenomicRanges)
+
+#-------- Consensus Peaks
+
+peak_files <- list.files(pattern="*_bpeaks.bed")
+peak_granges <- lapply(peak_files, import)
+covered_ranges <- slice(peak_coverage, lower=22, rangesOnly=T)
+covered_granges <- GRanges(covered_ranges)
+
+#-------- Merge peaks with gaps < 100bp apart
+
+covered_granges <- reduce(covered_granges, min.gapwidth=100)
+
+#-------- Remove top  and bottom 5% quartile peaks
+
+library("data.table")
+consensus <- as.data.table(covered_granges)
+consensus <- consensus[ width > quantile(width, .05) & width < quantile(width, .95)]
+write.table(consensus, "consensus.bed", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/Lee/SES_edgeR")
+
+#-------- Bedtools map
+
+module load bedtools/2.25.0
+qsubs --name bedtools_map --array names --cmd "bedtools map -a macs2/bdgbroadcall/consensus.bed \
+-b deeptools/SAMPLE_bowtie2_sorted_markdup_filtered_SES.bdg \
+-c 4 -o sum -g SES_edgeR/Ensembl_GRCh37_p13_Unmasked_noscaffolds.fa.chr.sizes \
+> SES_edgeR/counts_perPeak/SAMPLE_counts_perPeak.bed"
+
+for i in `ls *bed` ; do awk -v OFS='\t' '{if ($6==".") print $1,$2,$3,$4,"Peak_"NR,"0" ; else print $1,$2,$3,$4,"Peak_"NR,$6}' ${i} > ${i}_1 ; done
+
+#-------- EdgeR 
+
+rm(list=ls(pattern="peak"))
+library("readr")
+library("edgeR")
+library("reshape2")
+library(RColorBrewer)
+library(RUVSeq)
+library(ExpressionNormalizationWorkflow)
+library("ggplot2")
+
+#-------- Import
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/Lee/SES_edgeR")
+
+#-------- Counts
+
+covar <- read_delim("covar.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+rownames(covar) <- covar$SAMPLE
+counts <- paste(covar$NEUNID, "_counts_perPeak.bed", sep="")
+counts <- readDGE(counts, path="counts_perPeak", columns=c(5,6), header=FALSE)
+counts <- counts$counts
+colnames(counts) <- covar$SAMPLE
+
+#-------- Negative counts to 0
+
+counts[counts < 0] <- 0
+
+#-------- Design
+
+design <- model.matrix(~ GROUP + AGE + SEX + PMI + PROGLU, data=covar) 
+
+#-------- DGEList 
+ 
+y <- DGEList(counts, group=covar$GROUP)
+
+#-------- CPM
+
+cpm <- cpm(y,normalized.lib.sizes=TRUE, log=FALSE)
+write.csv(cpm,file="cpm.csv")
+logcpm <- cpm(y,normalized.lib.sizes=TRUE, log=TRUE)
+write.csv(logcpm, file="logcpm.csv")
+
+#-------- Pearsons Correlation
+
+correl <- cor(logcpm, method ="pearson")
+
+#-------- Average Correlation
+
+correl <- melt(correl, na.rm = TRUE)
+mean(correl$value,na.rm=FALSE)
+
+#-------- Outliers Below correlation >= 0.9
+
+aggregate(correl$value, by=list(Category=correl$Var2), FUN=mean)
+
+#-------- PCA Plots
+
+colors <- brewer.pal(3, "Set2")
+plotPCA(logcpm, col=colors[as.factor(covar$GROUP)], cex=1.2)
+
+#-------- ExpressionNormalizationWorkflow
+
+expSet <- expSetobj(logcpm,covar)
+pvcAnaly(expSet, 0.75, c("GROUP", "AGE", "SEX", "PMI","PROGLU"))
+
+#-------- Estimate Dispersion
+
+y <- estimateDisp(y, design)
+
+#-------- Quasi-likelihood Fit
+
+fit <- glmQLFit(y, design)
+
+#-------- Quasi-likelihood FTest
+
+hmc_peak <- glmQLFTest(fit,coef=2)
+hmc_peak <- topTags(hmc_peak, n=Inf, adjust.method="BH", sort="none")$table
+
+#-------- combine gene names & cpm counts
+
+hmc_peak <- cbind(hmc_peak,counts)
+write.csv(hmc_peak, file="PD_hMeDIPseq_SES_counts_perPeak_PDvsCTRL_Age_Sex_PMI_proGLU.csv")
+
+#-------- Filter PVAL <= 0.05 8133 peaks
+
+hmc_peak_PVAL <- hmc_peak[hmc_peak$PValue <= 0.05,]
+write.csv(hmc_peak_PVAL, file="PD_hMeDIPseq_SES_counts_perPeak_PDvsCTRL_Age_Sex_PMI_proGLU_0.05PVAL.csv")
+
+#-------- Differential hmc is significantly hypermethylated
+
+273519 hmc peaks, of which 131322 are hypermethylated (48%)
+8133 hmc_peak_PVAL pval <= 0.05, of which 4152 are hypermethylated (51%)
+54 hmc_PVAL_1diff pval <= 0.05 & -1 <= logFC >= 1, of which 32 are hypermethylated (59%)
+
+#-------- Annotate Peaks
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/Lee/SES_edgeR")
+
+library(GenomicFeatures)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(clusterProfiler)
+library(ReactomePA)
+library(ChIPseeker)
+
+consensus <- read_delim("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/Lee/macs2/bdgbroadcall/consensus.bed", "\t", escape_double = FALSE, col_names = FALSE,  trim_ws = TRUE)
+colnames(consensus) <- c("chr","start","end","peak","width","strand")
+
+hmc_peak <- hmc_peak[,1:5]
+hmc_peak$Status <- ifelse(hmc_peak$logFC >=0, "Hyper", "Hypo")
+
+consesus_peaks <- merge(consensus,hmc_peak,by.x="peak",by.y="row.names",sort=FALSE)
+consensus_PVAL <- consesus_peaks[consesus_peaks$PValue <= 0.05,]
+consensus_GR <- GRanges(seqnames=consesus_peaks$chr, IRanges(start=consesus_peaks$start, end=consesus_peaks$end), strand=consesus_peaks$strand, name=consesus_peaks$peak, logFC=consesus_peaks$logFC, PValue=consesus_peaks$PValue, Status=consesus_peaks$Status)
+consensus_PVAL_GR <- GRanges(seqnames=consensus_PVAL$chr, IRanges(start=consensus_PVAL$start, end=consensus_PVAL$end), strand=consensus_PVAL$strand, name=consensus_PVAL$peak, logFC=consensus_PVAL$logFC, PValue=consensus_PVAL$PValue, Status=consensus_PVAL$Status)
+txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
+consensus_peakAnno <- annotatePeak(consensus_GR, tssRegion=c(-1000, 1000), TxDb=txdb, annoDb="org.Hs.eg.db")
+consensus_PVAL_peakAnno <- annotatePeak(consensus_PVAL_GR, tssRegion=c(-1000, 1000), TxDb=txdb, annoDb="org.Hs.eg.db")
+
+plotAnnoBar(consensus_peakAnno)
+plotAnnoBar(consensus_PVAL_peakAnno)
+
+vennpie(consensus_peakAnno)
+vennpie(consensus_PVAL_peakAnno)
+
+plotDistToTSS(consensus_peakAnno, title="Distribution of Peaks\nrelative to TSS")
+plotDistToTSS(consensus_PVAL_peakAnno, title="Distribution of Pvalue Peaks\nrelative to TSS")
+
+consensus_Anno <- as.data.frame(consensus_peakAnno)
+consensus_PVAL_Anno <- as.data.frame(consensus_PVAL_peakAnno)
+
+pathway <- enrichPathway(consensus_PVAL_Anno$geneId)
+head(pathway, 2)
+dotplot(pathway)
+
+gene <- seq2gene(peak, tssRegion = c(-1000, 1000), flankDistance = 3000, TxDb=txdb)
+pathway2 <- enrichPathway(gene)
+head(pathway2, 2)
+dotplot(pathway2)
+
+#-------- Promoter
+
+273519 total peaks, of which 8133 Pvalue <= 0.05
+
+sum(grepl("^Promoter", consensus_Anno$annotation))
+sum(grepl("^Promoter", consensus_Anno$annotation) & consensus_Anno$logFC >=0)
+sum(grepl("^Promoter", consensus_PVAL_Anno$annotation))
+sum(grepl("^Promoter", consensus_PVAL_Anno$annotation) & consensus_PVAL_Anno$logFC >=0)
+
+12719 Promoter peaks, of which 7178 are hypermethylated (56%)
+475 Promoter peaks Pvalue <= 0.05, of which 334 are hypermethylated (70%)  
+
+enrichment <- data.frame(rbind(Back_Peaks=c(273519-12719, 12719), Sig_Peaks=c(8133-475, 475)))
+names(enrichment) <- c("Other","Promoter")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.271838
+p-value = 7.322e-07
+
+enrichment <- data.frame(rbind(Back=c(12719-7178, 7178),Sig=c(475-334, 334)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.828476
+p-value = 6.782e-10
+
+#-------- 5' UTR
+
+273519 total peaks, of which 8133 Pvalue <= 0.05
+
+sum(grepl("^5", consensus_Anno$annotation))
+sum(grepl("^5", consensus_Anno$annotation) & consensus_Anno$logFC >=0)
+sum(grepl("^5", consensus_PVAL_Anno$annotation))
+sum(grepl("^5", consensus_PVAL_Anno$annotation) & consensus_PVAL_Anno$logFC >=0)
+
+3861 5' UTR peaks, of which 2087 are hypermethylated (54%)
+142 5' UTR peaks Pvalue <= 0.05, of which 94 are hypermethylated (66%)  
+
+enrichment <- data.frame(rbind(Back_Peaks=c(273519-3861, 3861), Sig_Peaks=c(8133-142, 142)))
+names(enrichment) <- c("Other","5UTR")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.24108
+p-value = 0.008279
+
+enrichment <- data.frame(rbind(Back=c(3861-2087, 2087),Sig=c(142-94, 94)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.66442
+p-value = 0.002595
+
+#-------- Exon
+
+273519 total peaks, of which 8133 Pvalue <= 0.05
+
+sum(grepl("^Exon", consensus_Anno$annotation))
+sum(grepl("^Exon", consensus_Anno$annotation) & consensus_Anno$logFC >=0)
+sum(grepl("^Exon", consensus_PVAL_Anno$annotation))
+sum(grepl("^Exon", consensus_PVAL_Anno$annotation) & consensus_PVAL_Anno$logFC >=0)
+
+19091 Exon peaks, of which 9779 are hypermethylated (51%)
+670 Exon peaks Pvalue <= 0.05, of which 373 are hypermethylated (66%)  
+
+enrichment <- data.frame(rbind(Back_Peaks=c(273519-19091, 19091), Sig_Peaks=c(8133-670, 670)))
+names(enrichment) <- c("Other","Exon")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.196457
+p-value = 1.038e-05
+
+enrichment <- data.frame(rbind(Back=c(19091-9779, 9779),Sig=c(670-373, 373)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.195904
+p-value = 0.01296
+
+#-------- Intron
+
+273519 total peaks, of which 8133 Pvalue <= 0.05
+
+sum(grepl("^Intron", consensus_Anno$annotation))
+sum(grepl("^Intron", consensus_Anno$annotation) & consensus_Anno$logFC >=0)
+sum(grepl("^Intron", consensus_PVAL_Anno$annotation))
+sum(grepl("^Intron", consensus_PVAL_Anno$annotation) & consensus_PVAL_Anno$logFC >=0)
+
+96079 Intron peaks, of which 46511 are hypermethylated (48%)
+2788 Intron peaks Pvalue <= 0.05, of which 1377 are hypermethylated (49%)  
+
+enrichment <- data.frame(rbind(Back_Peaks=c(273519-96079, 96079), Sig_Peaks=c(8133-2788, 2788)))
+names(enrichment) <- c("Other","Intron")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.9633128
+p-value = 0.9441
+
+enrichment <- data.frame(rbind(Back=c(96079-46511, 46511),Sig=c(2788-1377, 1377)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.04006
+p-value = 0.158
+
+#-------- 3' UTR
+
+273519 total peaks, of which 8133 Pvalue <= 0.05
+
+sum(grepl("^3", consensus_Anno$annotation))
+sum(grepl("^3", consensus_Anno$annotation) & consensus_Anno$logFC >=0)
+sum(grepl("^3", consensus_PVAL_Anno$annotation))
+sum(grepl("^3", consensus_PVAL_Anno$annotation) & consensus_PVAL_Anno$logFC >=0)
+
+6969 3' UTR peaks, of which 3908 are hypermethylated (56%)
+265 3' UTR peaks Pvalue <= 0.05, of which 190 are hypermethylated (72%)  
+
+enrichment <- data.frame(rbind(Back_Peaks=c(273519-6969, 6969), Sig_Peaks=c(8133-265, 265)))
+names(enrichment) <- c("Other","3UTR")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.288216
+p-value = 6.776e-05
+
+enrichment <- data.frame(rbind(Back=c(6969-3908, 3908),Sig=c(265-190, 190)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.984067
+p-value = 1.924e-07
+
+#-------- Downstream 
+
+273519 total peaks, of which 8133 Pvalue <= 0.05
+
+sum(grepl("^Downstream", consensus_Anno$annotation))
+sum(grepl("^Downstream", consensus_Anno$annotation) & consensus_Anno$logFC >=0)
+sum(grepl("^Downstream", consensus_PVAL_Anno$annotation))
+sum(grepl("^Downstream", consensus_PVAL_Anno$annotation) & consensus_PVAL_Anno$logFC >=0)
+
+2263 Downstream peaks, of which 1132 are hypermethylated (50%)
+70 Downstream peaks Pvalue <= 0.05, of which 41 are hypermethylated (59%)  
+
+enrichment <- data.frame(rbind(Back_Peaks=c(273519-2263, 2263), Sig_Peaks=c(8133-70, 70)))
+names(enrichment) <- c("Other","Downstream")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.040646
+p-value = 0.3888
+
+enrichment <- data.frame(rbind(Back=c(2263-1132, 1132),Sig=c(70-41, 41)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.41233
+p-value = 0.09875
+
+#-------- Distal Intergenic
+
+273519 total peaks, of which 8133 Pvalue <= 0.05
+
+sum(grepl("^Distal", consensus_Anno$annotation))
+sum(grepl("^Distal", consensus_Anno$annotation) & consensus_Anno$logFC >=0)
+sum(grepl("^Distal", consensus_PVAL_Anno$annotation))
+sum(grepl("^Distal", consensus_PVAL_Anno$annotation) & consensus_PVAL_Anno$logFC >=0)
+
+132537 Distal peaks, of which 60727 are hypermethylated (46%)
+3723 Distal peaks Pvalue <= 0.05, of which 1743 are hypermethylated (47%)  
+
+enrichment <- data.frame(rbind(Back_Peaks=c(273519-132537, 132537), Sig_Peaks=c(8133-3723, 3723)))
+names(enrichment) <- c("Other","Distal")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.8980155
+p-value = 1
+
+enrichment <- data.frame(rbind(Back=c(132537-60727, 60727),Sig=c(3723-1743, 1743)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.040981
+p-value = 0.1173
+
+#-------- Brain Enhancers
+
+EnhTss <- read_table2("/Volumes/projects_secondary/labrie/lee_marshall/Resources/UCSC_hg19/ENNTSS.txt")
+EnhTss <- GRanges(seqnames=EnhTss$chr, IRanges(start=EnhTss$loc1, end=EnhTss$loc2), name=EnhTss$name)
+
+consensus_GR <- GRanges(seqnames=consensus_Anno$seqnames, IRanges(start=consensus_Anno$start, end=consensus_Anno$end), name=consensus_Anno$name, logFC=consensus_Anno$logFC, annotation=consensus_Anno$annotation)
+consensus_PVAL_GR <- GRanges(seqnames=consensus_PVAL_Anno$seqnames, IRanges(start=consensus_PVAL_Anno$start, end=consensus_PVAL_Anno$end), name=consensus_PVAL_Anno$name, logFC=consensus_PVAL_Anno$logFC, annotation=consensus_PVAL_Anno$annotation)
+
+consensus_EnhTss <- subsetByOverlaps(consensus_GR, EnhTss, ignore.strand=TRUE)
+consensus_EnhTss <- as.data.frame(consensus_EnhTss)
+
+consensus_PVAL_EnhTss <- as.data.frame(subsetByOverlaps(consensus_PVAL_GR, EnhTss, ignore.strand=TRUE))
+consensus_PVAL_EnhTss <- as.data.frame(consensus_PVAL_EnhTss)
+
+273519 total peaks, of which 8133 Pvalue <= 0.05
+
+summary(consensus_EnhTss$logFC >=0)
+summary(consensus_PVAL_EnhTss$logFC >=0)
+
+8907 Enhancer peaks, of which 5299 are hypermethylated (59%)
+299 Enhancer peaks Pvalue <= 0.05, of which 225 are hypermethylated (75%)  
+
+enrichment <- data.frame(rbind(Back_Peaks=c(273519-8907, 8907), Sig_Peaks=c(8133-299, 299)))
+names(enrichment) <- c("Other","Enhancer")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.133875
+p-value = 0.02075
+
+enrichment <- data.frame(rbind(Back=c(8907-5299, 5299),Sig=c(299-225, 225)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 2.070091
+p-value = 1.267e-08
+
+Enriched_Peaks <- data.frame(Peaks=c("Enhancer", "Promoter", "5' UTR", "Exon", "Intron", "3' UTR", "Downstream", "Intergenic"), OddsRatio=c("1.133875", "1.271838", "1.24108", "1.196457", "0.9633128", "1.288216", "1.040646", "0.8980155"))
+Enriched_Hyper <- data.frame(Peaks=c("Enhancer", "Promoter", "5' UTR", "Exon", "Intron", "3' UTR", "Downstream", "Intergenic"), OddsRatio=c("2.070091", "1.828476", "1.66442", "1.195904", "1.04006", "1.984067", "1.41233", "1.040981"))
+
+library("ggplot2")
+ggplot(data=Enriched_Hyper, aes(x=Peaks, y=log(OddsRatio))) +
+geom_bar(stat="identity", position=position_dodge(), width=0.75) +
+coord_flip() +
+scale_x_discrete(limits=rev(Enriched_Peaks$Peaks)) +
+scale_y_continuous(expand = c(0,0), limits = c(-0.2,1)) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=16,family="Helvetica"),
+axis.title.y=element_text(size=16,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+axis.text=element_text(size=16),
+legend.position="none",legend.title=element_blank(),legend.text=element_text(size=16))
+
+#------------------------------ Counts per C
+
+#-------- Convert bed to -1bp start & -1bp end
+
+awk -v OFS='\t' '{print $1,$2-1,$3-1,$4}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU.bed > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect.bed
+awk -v OFS='\t' '{print $1,$2-100,$3+100,$4}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect.bed > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_100bp.bed
+awk -v OFS='\t' '{print $1,$2-500,$3+500,$4}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect.bed > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_500bp.bed
+
+#-------- Bedtools multicov
+
+module load bedtools/2.25.0
+qsubs --name bedtools_multicov --array names --cmd "bedtools multicov \
+-bams bowtie2/SAMPLE_bowtie2_sorted_markdup.bam \
+-bed edger/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect.bed \
+> bedtools/SAMPLE_Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_0bp.bed"
+
+qsubs --name bedtools_multicov --array names --cmd "bedtools multicov \
+-bams bowtie2/SAMPLE_bowtie2_sorted_markdup.bam \
+-bed edger/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_100bp.bed \
+> bedtools/SAMPLE_Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_100bp.bed"
+
+qsubs --name bedtools_multicov --array names --cmd "bedtools multicov \
+-bams bowtie2/SAMPLE_bowtie2_sorted_markdup.bam \
+-bed edger/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_500bp.bed \
+> bedtools/SAMPLE_Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_500bp.bed"
+
+#-------- Move counts
+
+for i in `cat names` ; do 
+awk -v OFS='\t' '{print $1"_"$2"_"$3,$5}' bedtools/${i}_Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_0bp.bed \
+> edger/coverage_perC_0bp/${i}_counts
+done &
+
+for i in `cat names` ; do 
+awk -v OFS='\t' '{print $1"_"$2"_"$3,$5}' bedtools/${i}_Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_100bp.bed \
+> edger/coverage_perC_100bp/${i}_counts
+done &
+
+for i in `cat names` ; do 
+awk -v OFS='\t' '{print $1"_"$2"_"$3,$5}' bedtools/${i}_Methylkit_PDvsCTRL_age_sex_pmi_propGLU_intersect_500bp.bed \
+> edger/coverage_perC_500bp/${i}_counts
+done &
+
+#-------- EdgeR 
+
+rm(list=ls())
+rm(list=ls(pattern="allCs"))
+
+#-------- Import
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("RUVSeq", version = "3.8")
+library(readr)
+library(reshape)
+library(RColorBrewer)
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+library(RColorBrewer)
+library(RUVSeq)
+
+#-------- Import
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/edgeR")
+
+#-------- Counts
+
+covar <- read_delim("covar.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+counts <- paste(covar$NEUNID,"_counts",sep="")
+counts <- readDGE(counts,path="coverage_perC_0bp",columns=c(1,2),header=FALSE)
+counts <- counts$counts
+colnames(counts) <- covar$SAMPLE
+
+#-------- Design
+
+design <- model.matrix(~ GROUP + AGE + SEX + PMI + PROGLU, data=covar) 
+
+#-------- DGEList
+
+y <- DGEList(counts, group=covar$GROUP)
+
+#-------- TMM Normalization
+
+y <- calcNormFactors(y,method="TMM")
+
+#-------- CPM
+
+cpm <- cpm(y,normalized.lib.sizes=TRUE, log=FALSE)
+logcpm <- cpm(y,normalized.lib.sizes=TRUE, log=TRUE)
+
+#-------- Pearsons Correlation
+
+correl <- cor(logcpm, method ="pearson")
+
+#-------- Average Correlation
+
+correl <- melt(correl, na.rm = TRUE)
+mean(correl$value,na.rm=FALSE)
+
+#-------- PCA Plots
+
+colors <- brewer.pal(3, "Set2")
+plotPCA(logcpm, col=colors[as.factor(covar$GROUP)], cex=1.2)
+
+#-------- Estimate Dispersion
+
+y <- estimateDisp(y, design)
+
+#-------- GLMFIT
+
+fit <- glmFit(y,design)
+
+#-------- LRT
+
+lrt <- glmLRT(fit,coef=2)
+lrt <- topTags(lrt, n=Inf, adjust.method="BH", sort="none")$table
+
+#-------- combine gene names & cpm counts
+
+lrt <- cbind(lrt,cpm)
+write.csv(lrt, file="PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU.csv")
+
+#-------- Filter FDR <= 0.05
+
+lrt_PVAL <- lrt[lrt$PValue <= 0.05,]
+write.csv(lrt_PVAL, file="PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_0.05PVAL.csv")
+
+lrt_FDR <- lrt[lrt$FDR <= 0.05,]
+write.csv(lrt_FDR, file="PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_0.05FDR.csv")
+
+#-------- Enrichment
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/edgeR")
+
+#-------- PD Enhancer DMCs
+
+PDEnh <- read_delim("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU.tsv", "\t", escape_double = FALSE, trim_ws = TRUE)
+PDEnh$start <- PDEnh$start - 1
+PDEnh$Names <- paste(PDEnh$seqnames, PDEnh$end, sep="_")
+PDEnh_PVAL <- PDEnh[PDEnh$pvalue <= 0.05,]
+PDEnh_PVAL_1diff <- PDEnh_PVAL[abs(PDEnh_PVAL$meth.diff) >= 1,]
+PDEnh_FDR <- PDEnh[PDEnh$qvalue <= 0.05,]
+PDEnh_FDR_1diff <- PDEnh_FDR[abs(PDEnh_FDR$meth.diff) >= 1,]
+
+904511 PDEnh of which 504430 have increased methylation 55.8%
+96323 PDEnh_PVAL 10.6% of which 61752 have increased methylation 64.1%
+46035 PDEnh_PVAL_1diff 5.1% of which 31491 have increased methylation 68.4%
+1799 PDEnh_FDR 0.2% of which 1337 have increased methylation 74.3%
+1085 PDEnh_FDR_1diff 0.1% of which 756 have increased methylation 69.7%
+
+phyper(1337, 504430, 904511-504430, 1799, lower.tail=FALSE) 2.859937e-60
+phyper(756, 504430, 904511-504430, 1085, lower.tail=FALSE) 2.056595e-21
+
+#-------- hMehMeDIP DMCs
+
+hMeDIP <- lrt[,1:5]
+hMeDIP$Names <- PDEnh$Names
+hMeDIP$types <- CXreport$type
+
+hMeDIP_PVAL <- hMeDIP[hMeDIP$PValue <= 0.05,]
+hMeDIP_PVAL_1diff <- hMeDIP_PVAL[abs(hMeDIP_PVAL$logFC) >= 1,]
+
+904511 hMeDIP of which 521383 have increased hmc 57.6%
+42277 hMeDIP_PVAL 4.7% of which 30820 have increased hmc 72.9%
+34317 hMeDIP_PVAL_1diff 3.8% of which 24917 have increased hmc 72.6%
+
+phyper(30820, 521383, 1031160-521383, 42277, lower.tail=TRUE)
+phyper(24917, 521383, 1031160-521383, 34317, lower.tail=TRUE)
+
+percentage <- data.frame(rbind(Background=c(42,58),Significant=c(31,69),Hypo=c(38,62),Hyper=c(27,73)))
+names(percentage) <- c("Hypo-methylation","Hyper-methylation")
+percentage$Context <- rownames(percentage)
+percentage <- melt(percentage, id="Context")
+
+ggplot(data=percentage, aes(x=variable, y=value, fill=Context)) +
+geom_bar(stat="identity", position=position_dodge(), width=0.75) +
+scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+labs(x="",y="hmC Proportion %") +
+theme_classic() +
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=16,family="Helvetica"),
+axis.title.y=element_text(size=18,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=16,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+axis.text=element_text(size=18))
+
+#-------- hMehMeDIP DMCs not enriched in PD Enhancer DMCs
+
+sum(hMeDIP_PVAL$Names %in% PDEnh$Names) 42277
+sum(hMeDIP_PVAL$Names %in% PDEnh_PVAL$Names) 4525
+phyper(7886, 96323, 904511-96323, 73852, lower.tail=FALSE) 0.35
+
+sum(hMeDIP_PVAL_1diff$Names %in% PDEnh$Names) 34317
+sum(hMeDIP_PVAL_1diff$Names %in% PDEnh_PVAL_1diff$Names) 1723
+phyper(1868, 46035, 904511-46035, 19511, lower.tail=FALSE) 0.71
+
+#-------- hMeDIP enriched in PD Enhancer DMCs
+
+hMeDIP_1diff_PDEnh_PVAL_1diff <- hMeDIP_1diff[hMeDIP_1diff$Names %in% PDEnh_PVAL_1diff$Names,]
+2913 hMeDIP_PDEnh_hyper_PVAL_1diff of which 2001 have increased hmc 68.7%
+phyper(2001, 521383, 904511-521383, 2913, lower.tail=FALSE) 4.254533e-35
+
+enrichment <- data.frame(rbind(Background=c(383128, 521383),Significant=c(912, 2001)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.612271
+p-value < 2.2e-16
+
+#-------- Enrichment Hypermethylation & Hypomethylation
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/edgeR")
+
+#-------- hMehMeDIP DMCs Hypermethylation
+
+904511 hMeDIP of which 521383 have increased hmc 57.6%
+hMeDIP_1diff <- hMeDIP[abs(hMeDIP$logFC) >= 1,]
+
+#-------- PD Enhancer DMCs Hypermethylation
+
+PDEnh_hyper <- PDEnh[PDEnh$meth.diff > 0,]
+PDEnh_hyper_PVAL <- PDEnh_hyper[PDEnh_hyper$pvalue <= 0.05,]
+PDEnh_hyper_PVAL_1diff <- PDEnh_hyper_PVAL[abs(PDEnh_hyper_PVAL$meth.diff) >= 1,]
+
+#-------- hMeDIP hypermethylation enriched in PD Enhancer hypermethylated DMCs
+
+hMeDIP_PDEnh_hyper_PVAL <- hMeDIP[hMeDIP$Names %in% PDEnh_hyper_PVAL$Names,]
+61752 hMeDIP_PDEnh_hyper_PVAL of which 36017 have increased hmc 58.3%
+phyper(36017, 521383, 904511-521383, 61752, lower.tail=FALSE) 0.0001830359
+
+hMeDIP_PDEnh_hyper_PVAL_1diff <- hMeDIP[hMeDIP$Names %in% PDEnh_hyper_PVAL_1diff$Names,]
+31491 hMeDIP_PDEnh_hyper_PVAL_1diff of which 18490 have increased hmc 58.7%
+phyper(18490, 521383, 904511-521383, 31491, lower.tail=FALSE) 4.228259e-05
+
+hMeDIP_1diff_PDEnh_hyper_PVAL_1diff <- hMeDIP_1diff[hMeDIP_1diff$Names %in% PDEnh_hyper_PVAL_1diff$Names,]
+1794 hMeDIP_1diff_PDEnh_hyper_PVAL_1diff of which 1304 have increased hmc 72.7%
+phyper(1304, 521383, 904511-521383, 1794, lower.tail=FALSE) 2.056145e-40
+
+enrichment <- data.frame(rbind(Background=c(383128, 521383),Significant=c(490, 1304)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.955534
+p-value < 2.2e-16
+
+#-------- hMehMeDIP DMCs Hypermethylation
+
+904511 hMeDIP of which 383128 have decreased hmc 42.4%
+
+#-------- PD Enhancer DMCs Hypomethylation
+
+PDEnh_hypo <- PDEnh[PDEnh$meth.diff < 0,]
+PDEnh_hypo_PVAL <- PDEnh_hypo[PDEnh_hypo$pvalue <= 0.05,]
+PDEnh_hypo_PVAL_1diff <- PDEnh_hypo_PVAL[abs(PDEnh_hypo_PVAL$meth.diff) <= 1,]
+
+#-------- hMeDIP hypomethylation enriched in PD Enhancer hypomethylated DMCs
+
+hMeDIP_PDEnh_hypo_PVAL <- hMeDIP[hMeDIP$Names %in% PDEnh_hypo_PVAL$Names,]
+34571 hMeDIP_PDEnh_hypo_PVAL of which 15056 have increased hmc 43.6%
+phyper(36017, 383128, 904511-383128, 61752, lower.tail=TRUE) 1
+
+hMeDIP_PDEnh_hypo_PVAL_1diff <- hMeDIP[hMeDIP$Names %in% PDEnh_hypo_PVAL_1diff$Names,]
+14544 hMeDIP_PDEnh_hypo_PVAL_1diff of which 6487 have increased hmc 44.6%
+phyper(6487, 383128, 904511-383128, 14544, lower.tail=TRUE) 1
+
+hMeDIP_1diff_PDEnh_hypo_PVAL_1diff <- hMeDIP_1diff[hMeDIP_1diff$Names %in% PDEnh_hypo_PVAL_1diff$Names,]
+1119 hMeDIP_1diff_PDEnh_hypo_PVAL_1diff of which 422 have increased hmc 37.7%
+phyper(422, 383128, 904511-383128, 1119, lower.tail=TRUE) 0.0008678308
+
+enrichment <- data.frame(rbind(Background=c(521383,383128),Significant=c(697,422)))
+names(enrichment) <- c("Hyper-methylation","Hypo-methylation")
+fisher.test(enrichment, alternative="less")
+odds ratio = 0.8239349
+p-value = 0.0008793
+
+#-------- Scatterplot
+
+library(scales)
+library(ggplot2)
+
+S_sqrt <- function(x){sign(x)*sqrt(abs(x))}
+IS_sqrt <- function(x){x^2*sign(x)}
+S_sqrt_trans <- function() trans_new("S_sqrt",S_sqrt,IS_sqrt)
+
+enrichment <- data.frame(Names=PDEnh_PVAL$Names, meth.diff=PDEnh_PVAL$meth.diff, pvalue=PDEnh_PVAL$pvalue, logFC=hMeDIP_PDEnh_PVAL$logFC, PValue=hMeDIP_PDEnh_PVAL$PValue)
+enrichment_pospos <- subset(enrichment, meth.diff > 1 & logFC > 1)
+enrichment_posneg <- subset(enrichment, meth.diff > 1 & logFC < -1)
+enrichment_negpos <- subset(enrichment, meth.diff < -1 & logFC > 1)
+enrichment_negneg <- subset(enrichment, meth.diff < -1 & logFC < -1)
+
+p <- ggplot(data=enrichment, aes(x=meth.diff, y=logFC)) + 
+geom_point(size=0.1, colour="grey") +
+geom_point(data=enrichment_pospos, size=0.1, colour="brown") +
+geom_point(data=enrichment_posneg, size=0.1, colour="black") +
+geom_point(data=enrichment_negpos, size=0.1, colour="black") +
+geom_point(data=enrichment_negneg, size=0.1, colour="dodgerblue3") + 
+labs(x="PD Methylation Change %",y="PD hmC Change logFC") +
+scale_y_continuous(expand = c(0,0), limits = c(-3,3)) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=16,family="Helvetica"),
+axis.title.y=element_text(size=16,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+axis.text=element_text(size=18))
+p + scale_x_continuous(trans="S_sqrt", breaks=c(-16,-9,-4,-1,0,1,4,9,16))
+
+enrichment_pospos_bed <- PDEnh_PVAL_1diff[PDEnh_PVAL_1diff$Names %in% enrichment_pospos$Names,]
+enrichment_negneg_bed <- PDEnh_PVAL_1diff[PDEnh_PVAL_1diff$Names %in% enrichment_negneg$Names,]
+
+GREAT_HOMER <- read_delim("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT_HOMER_melt.csv", ",", escape_double = FALSE, trim_ws = TRUE)
+GREAT_HOMER_back <- unique(GREAT_HOMER$value)
+GREAT_HOMER_pospos <- unique(GREAT_HOMER[GREAT_HOMER$NAME %in% enrichment_pospos$Names,"value"])
+GREAT_HOMER_negneg <- unique(GREAT_HOMER[GREAT_HOMER$NAME %in% enrichment_negneg$Names,"value"])
+
+write.table(GREAT_HOMER_back,"PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_Great_Homer_genes.tsv", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(GREAT_HOMER_pospos,"PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_1diff_intersect_PDEnh_hyper_PVAL_1diff_Great_Homer_genes.tsv", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(GREAT_HOMER_negneg,"PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_1diff_intersect_PDEnh_hypo_PVAL_1diff_Great_Homer_genes.tsv", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+
+#-------- Heatmap
+
+library(pheatmap)
+library(RColorBrewer)
+library(viridis)
+library(dendsort)
+library(vegan)
+library(gplots)
+
+rownames(cpm) <- PDEnh$Names
+matrix <- cpm
+matrix <- matrix[rownames(matrix) %in% enrichment_pospos$Names,]
+mycol <- colorRampPalette(c("red1","red3","black","blue3","blue1"))(100)
+pheatmap(mat=matrix, color=mycol, border_color=NA, show_colnames=TRUE, show_rownames=FALSE,
+scale="row", clustering_distance_rows="correlation", clustering_distance_cols="correlation")
+pheatmap(mat=matrix, color=mycol, border_color=NA, show_colnames=TRUE, show_rownames=FALSE,
+scale="row", clustering_distance_rows="correlation")
+
+#-------- Barplot
+
+library("ggplot2")
+
+percentage <- data.frame(rbind(DMC=c(38,62),hMC=c(14,45)))
+names(percentage) <- c("Hypo-methylation","Hyper-methylation")
+percentage$Context <- rownames(percentage)
+percentage <- melt(percentage, id="Context")
+
+ggplot(data=percentage, aes(x=variable, y=value, fill=Context)) +
+geom_bar(stat="identity", position=position_dodge(), width=0.75) +
+scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+labs(x="",y="DNA Modification %") +
+scale_fill_manual(values=c("brown", "dodgerblue3")) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=16,family="Helvetica"),
+axis.title.y=element_text(size=18,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=16,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+axis.text=element_text(size=18),
+legend.position="none",legend.title=element_blank(),legend.text=element_text(size=16))
+
+write.csv(hMeDIP_1diff_PDEnh_PVAL_1diff, file="PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_1diff_intersect_PDEnh_PVAL_1diff.csv")
+savehistory("~/Desktop/Untitled.Rhistory")
+
+#-------- GREAT & HOMER
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC")
+
+#-------- Input Data
+
+GREAT_HOMER <- read_delim("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT_HOMER_melt.csv", ",", escape_double = FALSE, trim_ws = TRUE)
+GREAT_HOMER <- GREAT_HOMER[order(GREAT_HOMER$start),]
+GREAT_HOMER <- GREAT_HOMER[mixedorder(GREAT_HOMER$seqnames),]
+write.csv(GREAT_HOMER, file="Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT_HOMER_melt.csv")
+
+#-------- Associated Genes
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/edgeR")
+GREAT_HOMER_back <- unique(GREAT_HOMER$value)
+GREAT_HOMER_pospos <- unique(GREAT_HOMER[GREAT_HOMER$NAME %in% enrichment_pospos$Names,"value"])
+GREAT_HOMER_negneg <- unique(GREAT_HOMER[GREAT_HOMER$NAME %in% enrichment_negneg$Names,"value"])
+
+write.table(GREAT_HOMER_back,"PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_Great_Homer_genes.tsv", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(GREAT_HOMER_pospos,"PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_1diff_intersect_PDEnh_hyper_PVAL_1diff_Great_Homer_genes.tsv", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+write.table(GREAT_HOMER_negneg,"PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_1diff_intersect_PDEnh_hypo_PVAL_1diff_Great_Homer_genes.tsv", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+
+#---------- Metacore 
+
+https://portal.genego.com
+vanandel1
+!nf0rm@ticS
+
+PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_Great_Homer_genes.tsv = PD_hMeDIPseq_PD_Enh_background
+PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_1diff_intersect_PDEnh_hyper_PVAL_1diff_Great_Homer_genes.tsv = PD_hMeDIPseq_1diff_PD_Enh_hyper_PVAL_1diff
+PD_hMeDIPseq_noFil_0bp_allCs_glmLRT_PDvsCTRL_Age_Sex_PMI_proGLU_1diff_intersect_PDEnh_hypo_PVAL_1diff_Great_Homer_genes.tsv = PD_hMeDIPseq_1diff_PD_Enh_hypo_PVAL_1diff
+
+background = right click export as list
+tools -> set threshold and background
+tools -> workflows -> enrichment analysis workflows
+
+#-------- Homer + GREAT DMC Boxplot
+
+library(readr)
+library(readxl)
+Methylkit_diseases <- read_excel("PD_hMeDIPseq_1diff_PD_Enh_hyper_PVAL_1diff_genelist.xls")
+Methylkit_diseases$Order <- 10:1
+
+library(ggplot2)
+ggplot(data=Methylkit_diseases, aes(x=reorder(Disease,Order), y=-log10(pValue))) +
+geom_bar(stat="identity",fill="chartreuse4") +
+coord_flip() +
+labs(x="",y="-log10(P Value)",title="Disease") +
+geom_hline(yintercept=-log10(6.904e-3), linetype="dashed", color = "red", size=1) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=16,family="Helvetica"),
+axis.title.x=element_text(size=14,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica"),
+axis.text.y=element_text(colour="black",size=14,family="Helvetica"))
+
+#-------- hMeDIP Enrichment 
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_hMeDIPseq/Lee/edgeR")
+ 
+#-------- hMeDIP DMCs
+
+hMeDIP <- lrt[,1:5]
+hMeDIP$Names <- PDEnh$Names
+hMeDIP$types <- CXreport$type
+
+hMeDIP_PVAL <- hMeDIP[hMeDIP$PValue <= 0.05,]
+hMeDIP_PVAL_1diff <- hMeDIP_PVAL[abs(hMeDIP_PVAL$logFC) >= 1,]
+
+904511 hMeDIP of which 521383 have increased hmc 57.6%
+42277 hMeDIP_PVAL 4.7% of which 30820 have increased hmc 72.9%
+34317 hMeDIP_PVAL_1diff 3.8% of which 24917 have increased hmc 72.6%
+ 
+#-------- hMeDIP enrichment of CpGs hypermethylation 
+ 
+hMeDIP_CG <- hMeDIP[hMeDIP$type == "CG",]
+hMeDIP_CG_PVAL <- hMeDIP_CG[hMeDIP_CG$PValue <= 0.05,]
+ 
+111412 CpG hMeDIP of which 64032 have increased hmc 57.5%
+5173 hMeDIP_PVAL of which 3717 have increased hmc 71.8%
+ 
+enrichment <- data.frame(rbind(Background=c(47380,64032),Significant=c(1456,3717)))
+names(enrichment) <- c("Hypo","Hyper")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.888961
+p-value < 2.2e-16
+ 
+percentage <- data.frame(rbind(Background=c(43,57),Significant=c(28,72)))
+names(percentage) <- c("Hypo","Hyper")
+percentage$Context <- rownames(percentage)
+percentage <- melt(percentage, id="Context")
+
+ggplot(data=percentage, aes(x=variable, y=value, fill=Context)) +
+geom_bar(stat="identity", position=position_dodge(), width=0.75) +
+scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+labs(x="",y="hmC Proportion %") +
+theme_classic() +
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=16,family="Helvetica"),
+axis.title.y=element_text(size=18,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=16,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+axis.text=element_text(size=18))
+ 
+#-------- hMeDIP enrichment of CpGs hypermethylation in PD enhancer Sites
+ 
+PDEnh_hMeDIP <- data.frame(PDEnh=PDEnh$Names, type=PDEnh$type, meth.diff=PDEnh$meth.diff, pvalue=PDEnh$pvalue, hMeDIP=hMeDIP$Names, logFC=hMeDIP$logFC, PValue=hMeDIP$PValue)
+PDEnh_PVAL_1diff_hMeDIP_1diff <- subset(PDEnh_hMeDIP, abs(meth.diff) >= 1 & pvalue <= 0.05 & abs(logFC) >= 1)
+ 
+summary(PDEnh_PVAL_1diff_hMeDIP_1diff$meth.diff >= 1)
+summary(PDEnh_PVAL_1diff_hMeDIP_1diff$meth.diff >= 1 & PDEnh_PVAL_1diff_hMeDIP_1diff$logFC >= 1)
+1794 hMeDIP_1diff_PDEnh_hyper_PVAL_1diff of which 1304 have increased hmc 72.7%
+
+enrichment <- data.frame(rbind(Background=c(383128, 521383),Significant=c(490, 1304)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.955534
+p-value < 2.2e-16
+ 
+summary(PDEnh_PVAL_1diff_hMeDIP_1diff$meth.diff <= 1)
+summary(PDEnh_PVAL_1diff_hMeDIP_1diff$meth.diff <= 1 & PDEnh_PVAL_1diff_hMeDIP_1diff$logFC <= 1)
+1119 hMeDIP_1diff_PDEnh_hypo_PVAL_1diff of which 422 have increased hmc 37.7%
+
+enrichment <- data.frame(rbind(Background=c(521383,383128),Significant=c(697,422)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="less")
+odds ratio = 0.8239349
+p-value = 0.0008793
+ 
+PDEnh_PVAL_1diff_hMeDIP_1diff_CG <- PDEnh_PVAL_1diff_hMeDIP_1diff[PDEnh_PVAL_1diff_hMeDIP_1diff$type == "CG",]
+summary(PDEnh_PVAL_1diff_hMeDIP_1diff_CG$meth.diff >= 1)
+summary(PDEnh_PVAL_1diff_hMeDIP_1diff_CG$meth.diff >= 1 & PDEnh_PVAL_1diff_hMeDIP_1diff_CG$logFC >= 1)
+520 hMeDIP_1diff_PDEnh_hyper_PVAL_1diff of which 379 have increased hmc 
+
+enrichment <- data.frame(rbind(Background=c(111412-64032, 64032),Significant=c(520-379, 379)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.988897
+p-value = 2.519e-13
+ 
+summary(PDEnh_PVAL_1diff_hMeDIP_1diff_CG$meth.diff <= 1)
+summary(PDEnh_PVAL_1diff_hMeDIP_1diff_CG$meth.diff <= 1 & PDEnh_PVAL_1diff_hMeDIP_1diff_CG$logFC <= 1)
+693 hMeDIP_1diff_PDEnh_hypo_PVAL_1diff of which 281 have increased hmc 
+
+enrichment <- data.frame(rbind(Background=c(111412-64032, 64032),Significant=c(693-281,281)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="less")
+odds ratio = 0.5046654
+p-value < 2.2e-16
+
+
