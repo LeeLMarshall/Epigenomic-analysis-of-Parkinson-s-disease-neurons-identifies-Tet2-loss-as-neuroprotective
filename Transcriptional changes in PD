@@ -1,0 +1,764 @@
+#------------------------------ Transcriptional changes in PD
+
+#------------------------------ Alignment
+
+#-------- FastQC
+
+module load fastqc/0.11.5
+qsubs --names fastqc_pretrim --array names --cmd "fastqc --outdir fastqc fastq/SAMPLE.fastq.gz"
+
+#-------- Trimgalore
+
+module load trimgalore/0.4.4
+qsubs --names trimgalore_fastqc --array names --cmd "trim_galore --fastqc --output_dir trimgalore fastq/SAMPLE.fastq.gz"
+
+#-------- Star
+
+module load star/2.5.3a
+qsubs --names star_trans --cores 6 --array names --cmd "STAR --runMode alignReads --runThreadN 6 --genomeDir /home/lee.marshall/labrie-primary/Bioinformatics_core/transcriptomes/Human/Ensembl_GRCh37_Gencode_v19/star_index_75bp --genomeLoad NoSharedMemory --readFilesIn trimgalore/SAMPLE_trimmed.fq.gz --readFilesCommand zcat --outFileNamePrefix star_transcriptome/SAMPLE --outReadsUnmapped None --outSAMtype BAM SortedByCoordinate --outFilterMismatchNoverLmax 0.1 --quantMode GeneCounts"
+
+#-------- Multiqc
+
+qsubs --names multiqc_posttrim --cmd "multiqc ." 
+
+#-------- Star
+
+qsubs --names star_unmapped --cores 6 --array names --cmd "STAR --runMode alignReads --runThreadN 6 --genomeDir /home/lee.marshall/labrie-primary/Bioinformatics_core/transcriptomes/Human/Ensembl_GRCh37_Gencode_v19/star_index_75bp --genomeLoad NoSharedMemory --readFilesIn trimgalore/SAMPLE_trimmed.fq.gz --readFilesCommand zcat --outFileNamePrefix star_unmapped/SAMPLE --outReadsUnmapped Fastx --outSAMtype BAM SortedByCoordinate --outFilterMismatchNoverLmax 0.1 --quantMode GeneCounts"
+
+#-------- SAMTOOLS index
+
+qsubs --names samtools_index --array names --cmd "samtools index star/SAMPLEAligned.sortedByCoord.out.bam"
+
+#-------- STAR gene counts
+
+for i in `cat names` ; do 
+awk -v OFS='\t' 'FNR>4{print $1, $4}' star_transcriptome/${i}ReadsPerGene.out.tab | sed -e 's/\..*\t/\t/' > edgeR/genecounts/${i}_genecounts
+done
+
+while read line ; do mv $(awk '{print $1"_genecounts", $2"_genecounts"}' <<<$line) ; done < names
+
+#-------- TMM Normalization
+ 
+rm(list=ls(all=TRUE))
+if (!requireNamespace("BiocManager", quietly = TRUE)) + install.packages("BiocManager")
+BiocManager::install("dendextend", version = "3.8")
+library(edgeR)
+library(readr)
+library(ggfortify)
+library(dendextend)
+library(reshape2)
+library(ExpressionNormalizationWorkflow)
+library(sva)
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+library(RColorBrewer)
+library(RUVSeq)
+
+#-------- Import
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_edgeR")
+covar <- read_delim("covar.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+rownames(covar) <- covar$SAMPLE
+counts <- paste(covar$SAMPLE,"_genecounts",sep="")
+counts <- readDGE(counts,path="genecounts",columns=c(1,2),header=FALSE)
+counts <- counts$counts
+colnames(counts) <- sub("_genecounts","",colnames(counts),ignore.case=FALSE,fixed=FALSE)
+ 
+#-------- DGEList 
+ 
+y <- DGEList(counts, group=covar$GROUP)
+
+#-------- Filtering
+
+keep <- rowSums(cpm(y)>1) >= ncol(counts)
+y <- y[keep, , keep.lib.sizes=FALSE]
+dim(y) #14121
+ 
+#-------- TMM Normalization
+
+y <- calcNormFactors(y,method="TMM")
+
+#-------- CPM
+
+cpm <- cpm(y,normalized.lib.sizes=TRUE, log=FALSE)
+write.csv(cpm,file="cpm.csv")
+logcpm <- cpm(y,normalized.lib.sizes=TRUE, log=TRUE)
+write.csv(logcpm, file="logcpm.csv")
+
+#--------  Pearsons Correlation
+
+correl <- cor(logcpm, method ="pearson")
+
+#-------- Average Correlation
+
+correl <- melt(correl, na.rm = TRUE)
+mean(correl$value,na.rm=FALSE)
+# 0.9955341
+
+#-------- Outliers Below correlation >= 0.9
+
+aggregate(correl$value, by=list(Category=correl$Var2), FUN=mean)
+
+#-------- PCA Plots
+
+library(RColorBrewer)
+colors <- brewer.pal(3, "Set2")
+plotPCA(logcpm, col=colors[as.factor(covar$GROUP)], cex=1.2)
+plotPCA(logcpm, col=colors[as.factor(covar$PD_BRAAK_GROUP)], cex=1.2)
+
+#-------- ExpressionNormalizationWorkflow
+
+expSet <- expSetobj(logcpm,covar)
+pvcAnaly(expSet, 0.75, c("GROUP", "AGE", "SEX", "RIN"))
+aggregate(covar$neurons, by=list(Category=covar$GROUP), FUN=mean)
+t.test(covar$neurons[1:12],covar$neurons[13:36])
+
+#-------- SVA
+
+mod <- model.matrix(~ GROUP + AGE + SEX + RIN, data=covar)
+mod0 <- model.matrix(~ AGE + SEX + RIN, data=covar)
+
+n.sv <- num.sv(logcpm,mod,method="leek")
+svaobj <- svaseq(logcpm,mod,mod0,n.sv=n.sv)
+
+covar$SVA_1 <- round(svaobj$sv[,1], digits=3)
+covar$SVA_2 <- round(svaobj$sv[,2], digits=3)
+write.table(covar, file="covar.tsv", sep="\t", quote=F)
+
+#-------- PVCA SVA
+
+expSet <- expSetobj(logcpm,covar)
+pvcAnaly(expSet, 0.75, c("GROUP","AGE","SEX","RIN","SVA_1"))
+
+#-------- Paralization
+
+detectCores(all.tests = FALSE, logical = TRUE)
+param <- SnowParam(workers = 6, type = "SOCK")
+
+#-------- Combat
+
+design <- model.matrix(~ GROUP + AGE + SEX + RIN, data=covar) 
+combat <- ComBat(dat=logcpm, batch=covar$BATCH, mod=design, par.prior=TRUE, prior.plots=FALSE, BPPARAM=param)
+
+#-------- PVCA COMBAT
+
+expSet <- expSetobj(combat,covar)
+pvcAnaly(expSet, 0.75, c("GROUP","AGE","SEX","RIN"))
+
+#-------- PCA Plots
+
+plotPCA(combat, col=colors[as.factor(covar$GROUP)], cex=1.2)
+plotPCA(combat, col=colors[as.factor(covar$PD_BRAAK_GROUP)], cex=1.2)
+
+#-------- EdgeR 
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("RUVSeq", version = "3.8")
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_PFF/limma")
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+library(RColorBrewer)
+library(RUVSeq)
+
+#-------- Design
+
+design <- model.matrix(~ GROUP + AGE + SEX + RIN, data=covar) 
+design1 <- model.matrix(~ 0 + MATCH + AGE + SEX + RIN, data=covar)
+colnames(design1)[1:3] <- c("CTRL", "Matched", "nonMatched")
+
+#-------- Estimate Dispersion
+
+y1 <- y
+y <- estimateDisp(y, design)
+y1 <- estimateDisp(y1, design1)
+
+#-------- Quasi-likelihood Fit
+
+fit <- glmQLFit(y, design)
+fit1 <- glmQLFit(y1, design1)
+
+#-------- Contrast
+
+contrast <- makeContrasts(MatchedvsCTRL=Matched-CTRL, nonMatchedvsCTRL=nonMatched-CTRL, MatchedvsnonMatched=Matched-nonMatched, levels=design1)
+
+#-------- Quasi-likelihood FTest
+
+qlf <- glmQLFTest(fit,coef=2)
+qlf <- topTags(qlf, n=Inf, adjust.method="BH", sort="none")$table
+
+qlf1 <- glmQLFTest(fit1, contrast=contrast[,"MatchedvsCTRL"])
+qlf1 <- topTags(qlf1, n=Inf, adjust.method="BH", sort="none")$table
+
+qlf2 <- glmQLFTest(fit1, contrast=contrast[,"nonMatchedvsCTRL"])
+qlf2 <- topTags(qlf2, n=Inf, adjust.method="BH", sort="none")$table
+
+qlf3 <- glmQLFTest(fit1, contrast=contrast[,"MatchedvsnonMatched"])
+qlf3 <- topTags(qlf3, n=Inf, adjust.method="BH", sort="none")$table
+
+#-------- Change Names to Entrez
+
+columns(org.Hs.eg.db)
+
+qlf$symbol <- mapIds(org.Hs.eg.db, keys=row.names(qlf), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+qlf$entrez <- mapIds(org.Hs.eg.db, keys=row.names(qlf), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+qlf1$symbol <- mapIds(org.Hs.eg.db, keys=row.names(qlf1), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+qlf1$entrez <- mapIds(org.Hs.eg.db, keys=row.names(qlf1), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+qlf2$symbol <- mapIds(org.Hs.eg.db, keys=row.names(qlf2), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+qlf2$entrez <- mapIds(org.Hs.eg.db, keys=row.names(qlf2), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+qlf3$symbol <- mapIds(org.Hs.eg.db, keys=row.names(qlf3), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+qlf3$entrez <- mapIds(org.Hs.eg.db, keys=row.names(qlf3), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+#-------- combine gene names & cpm counts
+
+qlf <- cbind(qlf,cpm)
+write.csv(qlf, file="PD_RNAseq_glmQLF_PDvsCTRL_Age_Sex_RIN.csv")
+
+qlf1 <- cbind(qlf1,cpm)
+write.csv(qlf1, file="PD_RNAseq_glmQLF_contrast_MatchedvsCTRL_Age_Sex_RIN.csv")
+
+qlf2 <- cbind(qlf2,cpm)
+write.csv(qlf2, file="PD_RNAseq_glmQLF_contrast_nonMatchedvsCTRL_Age_Sex_RIN.csv")
+
+qlf3 <- cbind(qlf3,cpm)
+write.csv(qlf3, file="PD_RNAseq_glmQLF_contrast_MatchedvsnonMatched_Age_Sex_RIN.csv")
+
+#-------- Filter FDR <= 0.1
+
+qlf_FDR <- qlf[qlf$FDR <= 0.05,]
+write.csv(qlf_FDR, file="PD_RNAseq_glmQLF_PDvsCTRL_Age_Sex_RIN_0.05FDR.csv")
+
+qlf1_FDR <- qlf1[qlf1$FDR <= 0.05,]
+write.csv(qlf1_FDR, file="PD_RNAseq_glmQLF_contrast_MatchedvsCTRL_Age_Sex_RIN_0.05FDR.csv")
+
+qlf2_FDR <- qlf2[qlf2$FDR <= 0.05,]
+write.csv(qlf2_FDR, file="PD_RNAseq_glmQLF_contrast_nonMatchedvsCTRL_Age_Sex_RIN_0.05FDR.csv")
+
+qlf3_FDR <- qlf3[qlf3$FDR <= 0.05,]
+write.csv(qlf3_FDR, file="PD_RNAseq_glmQLF_contrast_MatchedvsnonMatched_Age_Sex_RIN_0.05FDR.csv")
+
+#-------- EdgeR RUVseq
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_edgeR")
+
+#-------- Stable Genes
+
+empirical <- qlf$PValue >= 0.25 & qlf1$PValue >= 0.25 & qlf2$PValue >= 0.25 & qlf3$PValue >= 0.25
+
+#-------- PCA
+
+plotPCA(logcpm, col=colors[as.factor(covar$GROUP)], cex=1.2)
+plotPCA(RUVg(combat, empirical, k=1, isLog=TRUE)$normalizedCounts, col=colors[as.factor(covar$GROUP)], cex=1.2)
+
+#-------- RUVg
+
+covar$RUVg <- round(RUVg(logcpm, empirical, k=1, isLog=TRUE)$W, digits=3)
+
+#-------- Design
+
+design1 <- model.matrix(~ 0 + MATCH + AGE + SEX + RIN + RUVg, data=covar)
+colnames(design1)[1:3] <- c("CTRL", "Matched", "nonMatched")
+
+#-------- Estimate Dispersion
+
+y1 <- estimateDisp(y1, design1)
+
+#-------- Quasi-likelihood Fit
+
+fit1 <- glmQLFit(y1, design1)
+
+#-------- Contrast
+
+contrast <- makeContrasts(MatchedvsCTRL=Matched-CTRL, nonMatchedvsCTRL=nonMatched-CTRL, MatchedvsnonMatched=Matched-nonMatched, levels=design1)
+
+#-------- Quasi-likelihood FTest
+
+qlf1_ruvg <- glmQLFTest(fit1, contrast=contrast[,"MatchedvsCTRL"])
+qlf1_ruvg <- topTags(qlf1_ruvg, n=Inf, adjust.method="BH", sort="none")$table
+
+qlf2_ruvg <- glmQLFTest(fit1, contrast=contrast[,"nonMatchedvsCTRL"])
+qlf2_ruvg <- topTags(qlf2_ruvg, n=Inf, adjust.method="BH", sort="none")$table
+
+qlf3_ruvg <- glmQLFTest(fit1, contrast=contrast[,"MatchedvsnonMatched"])
+qlf3_ruvg <- topTags(qlf3_ruvg, n=Inf, adjust.method="BH", sort="none")$table
+
+#-------- Change Names to Entrez
+
+columns(org.Hs.eg.db)
+
+qlf1_ruvg$symbol <- mapIds(org.Hs.eg.db, keys=row.names(qlf1_ruvg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+qlf1_ruvg$entrez <- mapIds(org.Hs.eg.db, keys=row.names(qlf1_ruvg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+qlf2_ruvg$symbol <- mapIds(org.Hs.eg.db, keys=row.names(qlf2_ruvg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+qlf2_ruvg$entrez <- mapIds(org.Hs.eg.db, keys=row.names(qlf2_ruvg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+qlf3_ruvg$symbol <- mapIds(org.Hs.eg.db, keys=row.names(qlf3_ruvg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+qlf3_ruvg$entrez <- mapIds(org.Hs.eg.db, keys=row.names(qlf3_ruvg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+#-------- combine gene names & cpm counts
+
+qlf1_ruvg <- cbind(qlf1_ruvg,cpm)
+write.csv(qlf1_ruvg, file="PD_RNAseq_glmQLF_contrast_MatchedvsCTRL_Age_Sex_RIN_RUVg.csv")
+
+qlf2_ruvg <- cbind(qlf2_ruvg,cpm)
+write.csv(qlf2_ruvg, file="PD_RNAseq_glmQLF_contrast_nonMatchedvsCTRL_Age_Sex_RIN_RUVg.csv")
+
+qlf3_ruvg <- cbind(qlf3_ruvg,cpm)
+write.csv(qlf3_ruvg, file="PD_RNAseq_glmQLF_contrast_MatchedvsnonMatched_Age_Sex_RIN_RUVg.csv")
+
+#-------- Filter FDR <= 0.1
+
+qlf1_ruvg_FDR <- qlf1_ruvg[qlf1_ruvg$FDR <= 0.05,]
+
+write.csv(qlf1_ruvg_FDR, file="PD_RNAseq_glmQLF_contrast_MatchedvsCTRL_Age_Sex_RIN_RUVg_0.05FDR.csv")
+
+qlf2_ruvg_FDR <- qlf2_ruvg[qlf2_ruvg$FDR <= 0.05,]write.csv(qlf2_ruvg_FDR, file="PD_RNAseq_glmQLF_contrast_nonMatchedvsCTRL_Age_Sex_RIN_RUVg_0.05FDR.csv")
+
+qlf3_ruvg_FDR <- qlf3_ruvg[qlf3_ruvg$FDR <= 0.05,]write.csv(qlf3_ruvg_FDR, file="PD_RNAseq_glmQLF_contrast_MatchedvsnonMatched_Age_Sex_RIN_RUVg_0.05FDR.csv")
+
+#-------- GSEA 
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_edgeR/MatchedvsnonMatched")
+http://pathwaycommons.github.io/guide/workflows/rna_seq_to_enrichment_map/index/
+http://pathwaycommons.github.io/guide/workflows/rna_seq_to_enrichment_map_r_notebook/index.html
+http://baderlab.org/Software/EnrichmentMap#User_Guide
+http://download.baderlab.org/EM_Genesets/Human_GOBP_AllPathways_no_GO_iea_November_01_2017_symbol.gmt
+
+#-------- MatchedvsnonMatched 
+
+MatchedvsnonMatched <- qlf3_ruvg
+MatchedvsnonMatched_covar <- covar[!covar$MATCH == "CTRL",]
+MatchedvsnonMatched_cpm <- cpm[,colnames(cpm) %in% MatchedvsnonMatched_covar$SAMPLE]
+
+#-------- Expression (.txt)
+
+exp_df <- MatchedvsnonMatched
+exp_df <- data.frame(NAME=exp_df$symbol, DESCRIPTION=exp_df$symbol,stringsAsFactors=FALSE)
+exp_df <- data.frame(exp_df,MatchedvsnonMatched_cpm)
+exp_df <- exp_df[!is.na(exp_df$NAME),]
+exp_df <- exp_df[!duplicated(exp_df$NAME),]
+write.table(exp_df,file="expression.txt",sep="\t",row=F,quote=F)
+
+#-------- Rank list file (.rnk)
+
+rank <- MatchedvsnonMatched
+rank_df <- sign(rank$logFC) * (-1) * log10(rank$PValue)
+#- Take into account log10(0) = -Inf
+rank_df <- sapply(rank_df,function(x) replace(x,is.infinite(x),sign(x) * ((max(rank_df[rank_df !=Inf])) + runif(1))))
+rank_df <- data.frame(gene=rank$symbol,rank=rank_df,stringsAsFactors=FALSE)
+rank_df <- rank_df[!is.na(rank_df$gene),]
+rank_df <- rank_df[order(rank_df[,2],decreasing=TRUE),]
+rank_df <- rank_df[!duplicated(rank_df$gene),]
+write.table(rank_df,file="rank_df.rnk",quote=FALSE,sep="\t",row.names=FALSE)
+
+#-------- Class file (.cls)
+
+cls_df <- rbind(paste(ncol(MatchedvsnonMatched_cpm),"2","1"),paste("#nonMatched","Matched"),paste(MatchedvsnonMatched_covar$MATCH,collapse=" "))
+write.table(cls_df,file="class.cls",quote=FALSE,sep=" ",row.names=FALSE)
+
+#-------- GSEA unix script
+
+java -cp /Applications/gsea_3.0/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked -help
+
+#-------- nano gsea_script.sh
+ 
+#!/bin/bash
+# GSEA script
+softwareDir="/Applications/gsea_3.0"
+echo "softwareDir = $softwareDir"
+projectDir="/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq"
+echo "projectDir = $projectDir"
+inDir="$projectDir/LABV_20180920_RNA/star_edgeR/MatchedvsnonMatched"
+echo "outDir = $inDir"
+outDir="$projectDir/LABV_20180920_RNA/star_edgeR/MatchedvsnonMatched"
+echo "outDir = $outDir"
+gmtFile="$inDir/Human_GOBP_AllPathways_no_GO_iea_November_01_2017_symbol.gmt"
+echo "gmtFile = $gmtFile"
+rankFile="$inDir/rank_df.rnk"
+echo "rankFile = $rankFile"
+rptLabel="MatchedvsnonMatched"
+echo "rptLabel = $rptLabel"
+
+
+if [ ! -f $outDir/$rptLabel.txt ];
+then
+echo "Running GSEA"
+echo "java -cp $softwareDir/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked \
+-gmx $gmtFile -nperm 1000 -scoring_scheme classic -norm meandiv \
+-rnk $rankFile -gui false -out $outDir -rpt_label $rptLabel \
+-set_min 10 -set_max 500 -rnd_seed timestamp -plot_top_x 20 \
+-zip_report false -make_sets true -create_svgs false -collapse false > $outDir/$rptLabel.txt"
+java -cp $softwareDir/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked \
+-gmx $gmtFile -nperm 1000 -scoring_scheme classic -norm meandiv \
+-rnk $rankFile -gui false -out $outDir -rpt_label $rptLabel \
+-set_min 10 -set_max 500 -rnd_seed timestamp -plot_top_x 20 \
+-zip_report false -make_sets true -create_svgs false -collapse false > $outDir/$rptLabel.txt
+else
+echo "[[ERROR]] FOUND $rptLabel.txt" 
+fi
+
+#-------- Run script
+
+chmod 750 gsea_script.sh
+./gsea_script.sh
+
+#-------- dgeR 
+
+RUVseqsetwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_edgeR")
+library("calibrate")
+
+#-------- Stable Genes
+
+empirical <- qlf$PValue >= 0.5 
+
+#-------- RUVg
+
+RUVg_counts <- RUVg(logcpm, empirical, k=1, isLog=TRUE)$normalizedCounts
+covar$RUVg <- round(RUVg(logcpm, empirical, k=1, isLog=TRUE)$W, digits=3)
+write.csv(covar, file="covar.csv")
+
+#-------- PCA
+
+plotPCA(RUVg_counts, col=colors[as.factor(covar$GROUP)], cex=1.2)
+
+#-------- Design
+
+design <- model.matrix(~ GROUP + AGE + SEX + RIN + RUVg, data=covar) 
+
+#-------- Estimate Dispersion
+
+y <- estimateDisp(y, design)
+
+#-------- Quasi-likelihood Fit
+
+fit <- glmQLFit(y, design)
+
+#-------- Quasi-likelihood FTest
+
+fit <- glmQLFTest(fit,coef=2)
+qlf_ruvg <- topTags(fit, n=Inf, adjust.method="BH", sort="none")$table
+
+#-------- Change Names to Entrez
+
+qlf_ruvg$symbol <- mapIds(org.Hs.eg.db, keys=row.names(qlf_ruvg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+qlf_ruvg$entrez <- mapIds(org.Hs.eg.db, keys=row.names(qlf_ruvg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+#-------- combine gene names & cpm counts
+
+qlf_ruvg <- cbind(qlf_ruvg,cpm)
+write.csv(qlf_ruvg, file="PD_RNAseq_glmQLF_PDvsCTRL_Age_Sex_RIN_RUVg.csv")
+
+#-------- Filter FDR <= 0.1
+
+qlf_ruvg_FDR <- qlf_ruvg[qlf_ruvg$FDR <= 0.05,]
+write.csv(qlf_ruvg_FDR, file="PD_RNAseq_glmQLF_PDvsCTRL_Age_Sex_RIN_RUVg_0.05FDR.csv")
+
+#-------- Volcano Plot
+
+with(qlf_ruvg, plot(logFC, -log10(PValue), pch=20, main="PDvsCTRL RUVg", xlim=c(-3,4), ylim=c(0,7)))
+with(subset(qlf_ruvg, FDR <= 0.05 ), points(logFC, -log10(PValue), pch=20, col="red3"))
+with(subset(qlf_ruvg, abs(logFC) >= 1), points(logFC, -log10(PValue), pch=20, col="orange3"))
+with(subset(qlf_ruvg, FDR <= 0.05 & abs(logFC) >= 1), points(logFC, -log10(PValue), pch=20, col="green"))
+with(subset(qlf_ruvg, FDR <= 0.05 & logFC >= 2), textxy(logFC, -log10(PValue), labs=symbol, cex=.8))
+with(subset(qlf_ruvg, FDR <= 0.05 & logFC <= -1), textxy(logFC, -log10(PValue), labs=symbol, cex=.8))
+
+#-------- Smearplot
+
+plotSmear(fit, de.tags=rownames(qlf_ruvg_FDR), xlab="Average logCPM", ylab="logFC", smooth.scatter=TRUE, main="PD_RNAseq_glmQLF_PDvsCTRL_Age_Sex_RIN_RUVg")
+
+#------------------------------ DEG expression & DMC methylation enrichment 
+
+rm(list=ls(all=TRUE))
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_edgeR")
+
+#-------- Enrichment 
+
+9957 Methylkit genes
+2885 Methylkit DEGs
+14121 qlf_ruvg
+1032 qlf_ruvg_FDR
+
+#-------- Methylkit DEGs enriched in PD RNAseq DEGs
+
+summary(qlf_ruvg_FDR$symbol %in% Methylkit_BacGenes$value) # 526
+summary(qlf_ruvg_FDR$symbol %in% Methylkit_SigGenes$value) # 168
+phyper(168,2885,9957-2885,526,lower.tail=FALSE) # 0.05698482
+
+#-------- PD RNAseq DEGs enriched in Methylkit DEGs
+
+summary(Methylkit_SigGenes$value %in% qlf_ruvg$symbol) 1939
+summary(Methylkit_SigGenes$value %in% qlf_ruvg_FDR$symbol) 168
+phyper(168,1032,14121-1032,1939,lower.tail=FALSE) # 0.006763998
+
+library(VennDiagram)
+grid.newpage()
+draw.pairwise.venn(1939, 526, 168, category = c("Methylation", "Expression"), lty = rep("blank",2), fill = c("blue", "red"), alpha = rep(0.5, 2), cat.pos = c(0,0), cat.dist = rep(0.025, 2))
+
+#-------- GSEA 
+
+http://pathwaycommons.github.io/guide/workflows/rna_seq_to_enrichment_map/index/
+http://pathwaycommons.github.io/guide/workflows/rna_seq_to_enrichment_map_r_notebook/index.html
+http://baderlab.org/Software/EnrichmentMap#User_Guide
+http://download.baderlab.org/EM_Genesets/Human_GOBP_AllPathways_no_GO_iea_November_01_2017_symbol.gmt
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_edgeR/RUVg_gsea")
+
+#-------- Expression (.txt)
+
+exp_df <- data.frame(NAME=qlf_ruvg$symbol, DESCRIPTION=qlf_ruvg$symbol,stringsAsFactors=FALSE)
+exp_df <- data.frame(exp_df,RUVg_counts)
+exp_df <- exp_df[!is.na(exp_df$NAME),]
+exp_df <- exp_df[!duplicated(exp_df$NAME),]
+write.table(exp_df,file="expression.txt",sep="\t",row=F,quote=F)
+
+#-------- Rank list file (.rnk)
+
+rank_df <- sign(qlf_ruvg$logFC) * (-1) * log10(qlf_ruvg$PValue)
+rank_df <- sapply(rank_df,function(x) replace(x,is.infinite(x),sign(x) * ((max(rank_df[rank_df !=Inf])) + runif(1))))
+rank_df <- data.frame(gene=qlf_ruvg$symbol,rank=rank_df,stringsAsFactors=FALSE)
+rank_df <- rank_df[!is.na(rank_df$gene),]
+rank_df <- rank_df[order(rank_df[,2],decreasing=TRUE),]
+rank_df <- rank_df[!duplicated(rank_df$gene),]
+write.table(rank_df,file="rank_df.rnk",quote=FALSE,sep="\t",row.names=FALSE)
+
+#-------- Class file (.cls)
+
+cls_df <- rbind(paste(ncol(combat),"1","2"),paste("#CTRL","PD"),paste(covar$GROUP,collapse=" "))
+write.table(cls_df,file="class.cls",quote=FALSE,sep=" ",row.names=FALSE)
+
+#-------- GSEA unix script
+
+cd /Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_edgeR/RUVg_gsea/
+
+#-------- Check software
+
+java -cp /Applications/gsea_3.0/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked -help
+
+#-------- nano gsea_script.sh
+
+!/bin/bash
+# GSEA script
+softwareDir="/Applications/gsea_3.0"
+echo "softwareDir = $softwareDir"
+projectDir="/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq"
+echo "projectDir = $projectDir"
+inDir="$projectDir/LABV_20180920_RNA/star_edgeR/RUVg_gsea"
+echo "outDir = $inDir"
+outDir="$projectDir/LABV_20180920_RNA/star_edgeR/RUVg_gsea"
+echo "outDir = $outDir"
+gmtFile="$inDir/Human_GOBP_AllPathways_no_GO_iea_November_01_2017_symbol.gmt"
+echo "gmtFile = $gmtFile"
+rankFile="$inDir/rank_df.rnk"
+echo "rankFile = $rankFile"
+rptLabel="PDvsCTRL"
+echo "rptLabel = $rptLabel"
+
+
+if [ ! -f $outDir/$rptLabel.txt ];
+then
+echo "Running GSEA"
+echo "java -cp $softwareDir/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked \
+-gmx $gmtFile \
+-nperm 1000 \
+-scoring_scheme weighted \
+-rnk $rankFile \
+-gui false \
+-out $outDir \
+-rpt_label $rptLabel \
+-set_min 10 \
+-set_max 500 \
+-rnd_seed timestamp -plot_top_x 20 \
+-zip_report false \
+-make_sets true \
+-create_svgs false \
+-collapse false > $outDir/$rptLabel.txt"
+
+java -cp $softwareDir/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked \
+-gmx $gmtFile \
+-nperm 1000 \
+-scoring_scheme weighted \
+-norm meandiv \
+-rnk $rankFile \
+-gui false \
+-out $outDir \
+-rpt_label $rptLabel \
+-set_min 10 \
+-set_max 500 \
+-rnd_seed timestamp -plot_top_x 20 \
+-zip_report false \
+-make_sets true \
+-create_svgs false \
+-collapse false > $outDir/$rptLabel.txt
+else
+echo "[[ERROR]] FOUND $rptLabel.txt" 
+fi
+
+#-------- Run script
+
+chmod 750 gsea_script.sh
+./gsea_script.sh
+
+#-------- GProfiler
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_VoomLimma/Methylkit_gprofiler")
+Methylkit_SigGenes <- Methylkit_BacGenes[Methylkit_BacGenes$qvalue <= 0.05,]
+write.csv(Methylkit_BacGenes, file="Methylkit_BacGenes.csv")
+write.csv(Methylkit_SigGenes, file="Methylkit_SigGenes.csv")
+
+#-------- Expression & Methylation Correlation with PD 
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_RNAseq/LABV_20180920_RNA/star_edgeR")
+
+#-------- Combat Limma Residuals
+
+design1 <- model.matrix(~ AGE + SEX + RIN + RUVg, data=covar) 
+
+#-------- Limma
+
+fit <- lmFit(logcpm,design1)
+efit <- eBayes(fit)
+
+#-------- Residuals
+
+qlf_ruvg_residuals <- cbind(qlf_ruvg, as.data.frame(residuals.MArrayLM(efit,logcpm)))
+write.csv(qlf_ruvg, file="PD_RNAseq_glmQLF_PDvsCTRL_Age_Sex_RIN_RUVg_residuals.csv")
+
+#-------- Methylation Most Significant C's to a Single Gene
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC")
+Methylkit <- read.delim("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT_HOMER.tsv")
+
+#-------- The Most Significant C's to a Single Gene
+
+library(reshape)
+Methylkit_melt <- melt(Methylkit, id=names(Methylkit)[1:9])
+Methylkit_melt <- Methylkit_melt[order(Methylkit_melt$pvalue, decreasing=FALSE),]
+Methylkit_melt <- Methylkit_melt[complete.cases(Methylkit_melt),]
+Methylkit_BacGenes <- Methylkit_melt[!duplicated(Methylkit_melt$value),]
+write.csv(Methylkit_BacGenes, file="Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT_HOMER_melt_BacGenes.csv")
+
+#-------- Methylation Limma Residuals
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC")
+covar_methyl <- read_delim("Covar.tsv", "\t", escape_double=FALSE, trim_ws=TRUE)
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Limma/DMC")
+MValues <- read_delim("CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg_30na_rm0_SNP_Mvalues.csv", ",", escape_double=FALSE, trim_ws=TRUE)
+
+#-------- Design
+
+design2 <- model.matrix(~ AGE + SEX + PMI + proportions_GLU, data=covar_methyl)
+
+#-------- Limma
+
+fit2 <- lmFit(MValues[,-1:-6],design2)
+efit2 <- eBayes(fit2)
+
+#-------- Residuals
+
+Methylkit_residuals <- cbind(Methylkit[,1:9], as.data.frame(residuals.MArrayLM(efit2,MValues[,-1:-6])))
+write.csv(Methylkit_residuals, file="lmfit_age_sex_pmi_propGLU_residuals.csv")
+
+#-------- Shared Samples and Genes
+
+Methylkit_genes <- Methylkit_residuals[,match(c(names(Methylkit_residuals)[1:9],covar$SAMPLE_ENHANCER), names(Methylkit_residuals))] 
+Methylkit_genes <- Methylkit_genes[match(Methylkit_BacGenes$NAME,Methylkit_genes$NAME),]
+Methylkit_genes <- cbind(Methylkit_BacGenes[,1:11],Methylkit_genes[-1:-9])
+Methylkit_genes <- Methylkit_genes[match(qlf_ruvg_residuals$symbol,Methylkit_genes$value),]
+Methylkit_genes <- Methylkit_genes[complete.cases(Methylkit_genes),]
+
+qlf_ruvg_genes <- qlf_ruvg_residuals[match(Methylkit_genes$value,qlf_ruvg_residuals$symbol),]
+qlf_ruvg_genes <- qlf_ruvg_genes[complete.cases(qlf_ruvg_genes),]
+
+#-------- TET2 
+
+TET2 <- cbind(covar[,c(1,5,3,6)], t(qlf_ruvg_genes[qlf_ruvg_genes$symbol == "TET2",-1:-7]), t(Methylkit_genes[Methylkit_genes$value == "TET2",-1:-11]))
+names(TET2)[5:6] <- c("TET2_expression_residuals","TET2_methylation_residuals")
+
+#-------- GGPlots
+
+summary(lm(TET2_expression_residuals ~ TET2_methylation_residuals + GROUP, data=TET2))
+# TET2_MValues pvalue = 0.03214
+# GROUPPD pvalue = 0.00374
+
+ggplot(TET2, aes(x=TET2_methylation_residuals, y=TET2_expression_residuals, color=GROUP)) +
+geom_point() + geom_smooth(method=lm) +
+labs(title="TET2_Expression_Residuals_vs_TET2_Methylation_Residuals") +
+theme_classic() +
+theme(axis.title.x=element_text(size=14,family="Helvetica"),
+axis.title.y=element_text(size=14,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica"),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"))
+
+#-------- TET2 
+
+TET2exp <- cbind(covar[,c(1,5,3,6)], t(subset(cpm, qlf_ruvg$symbol == "TET2")))
+names(TET2)[5:6] <- c("TET2_expression_residuals","TET2_methylation_residuals")
+
+library(ggplot2)
+ggplot(data=TET2exp, aes(x=GROUP, y=ENSG00000168769, color=GROUP)) +
+geom_boxplot() + 
+geom_jitter(shape=16, position=position_jitter(0.15), size=3) +
+scale_color_manual(values=c("dodgerblue3", "brown")) +
+scale_y_continuous(expand = c(0,0), limits = c(40,100)) +
+labs(x="",y="TET2 (cpm)") +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=14,family="Helvetica"),
+axis.title.y=element_text(size=14,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica"),
+axis.text.y=element_text(colour="black",size=10,family="Helvetica"),
+axis.text=element_text(size=18),
+legend.position="none")
+
+#-------- Expression & Methylation Correlation with PD
+
+GROUP <- as.data.frame(model.matrix(~ GROUP, data=covar))
+GROUP <- GROUP$GROUPPD
+
+#-------- loop
+
+pval <- as.data.frame(matrix(data=NA, nrow=nrow(qlf_ruvg_genes), ncol=3))
+names(pval) <- c("Intercept", "Methylation", "GROUP")
+
+for(i in 1:nrow(qlf_ruvg_genes))
+{
+data <- data.frame(t(qlf_ruvg_genes[i,-1:-7]), t(Methylkit_genes[i,-1:-11]), GROUP)
+names(data) <- c("Expression_residuals", "Methylation_residuals", "PDvsCTRL")
+fit1 <- lm(Expression_residuals ~ Methylation_residuals + PDvsCTRL, data=data)
+pval[i,] <- summary(fit1)$coefficients[,4]
+}
+
+
+pval <- cbind(qlf_ruvg_genes[,6],pval)
+pval_ExpMeth <- pval[pval$Methylation <= 0.05,]
+pval_ExpGROUP <- pval[pval$GROUP <= 0.05,]
+
+241 genes whos expression is significantly associated with methylation, independent of PD
+1113 genes whos expression is significantly associated with PD, independent of methylation 
+76 genes in both, TET2 is one of them
+
+library(VennDiagram)
+grid.newpage() 
+draw.pairwise.venn(241, 1113, 76, category = c("Expression & Methylation", "Expression & PD"), lty = rep("blank", 2), fill = c("green", "red"), alpha = rep(0.5, 2), cat.pos = c(0, 0), cat.dist = rep(0.025, 2))
+
+
+
+
+
+
+
