@@ -1,0 +1,768 @@
+#------------------------------ Validation and consequences of epigenetic disruption of TET2 in PD
+
+#---------- Sort, Filter for 30x Coverage & BetaValues
+qsubs --name Sort_30xCov --array names --cmd "sort -k1,1V -k2n SAMPLE_CXreport | awk -v OFS='\t' '{if (\$4+\$5 >= 30) print \$1, \$2, \$3, \$6, \$7, \$4/(\$4+\$5) ; else print \$1, \$2, \$3, \$6, \$7, \"NA\"}' > SAMPLE_Sort_30xCov_BetaValues" 
+
+
+#---------- Total Reads
+
+qsubs --name Sort_Reads --array names --cmd "sort -k1,1V -k2n SAMPLE_CXreport | awk -v OFS='\t' '{print \$1, \$2, \$3, \$6, \$7, \$4+\$5}' > SAMPLE_Sort_Reads"
+
+#--------- MERGE BetaValues
+for i in `seq 143` ; do 
+if [ ${i} == 1 ]
+then
+NAME=`head -n ${i} names | tail -n1`
+awk -v OFS='\t' 'BEGIN{print "chr","loc","loc1","type","seq","str","'${NAME}'"} 
+{print $1,$2,$2+1,$4,$5,$3,$6}' ${NAME}_Sort_30xCov_BetaValues > CXreport_Sort_30xCov_BetaValues
+else
+NAME=`head -n ${i} names | tail -n1`
+awk -v OFS='\t' 'BEGIN{print "'${NAME}'"} {print $6}' ${NAME}_Sort_30xCov_BetaValues > test1
+paste CXreport_Sort_30xCov_BetaValues test1 > test2
+mv test2 test1
+mv test1 CXreport_Sort_30xCov_BetaValues
+fi
+done &
+
+
+
+#--------- MERGE Total Reads
+for i in `seq 143` ; do 
+if [ ${i} == 1 ]
+then
+NAME=`head -n ${i} names | tail -n1`
+awk -v OFS='\t' 'BEGIN{print "chr","loc","loc1","type","seq","str","'${NAME}'"} 
+{print $1,$2,$2+1,$4,$5,$3,$6}' ${NAME}_Sort_Reads > CXreport_Sort_Reads
+else
+NAME=`head -n ${i} names | tail -n1`
+awk -v OFS='\t' 'BEGIN{print "'${NAME}'"} {print $6}' ${NAME}_Sort_Reads > test3
+paste CXreport_Sort_Reads test3 > test4
+mv test4 test3
+mv test3 CXreport_Sort_Reads
+fi
+done &
+
+#--------------------------------------------- QC Plots
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/CXreports")
+library(readr)
+BetaValues <- read_delim("CXreport_Sort_30xCov_BetaValues","\t",escape_double=FALSE,trim_ws=TRUE)
+covar <- read_delim("covar","\t",escape_double=FALSE,trim_ws=TRUE)
+
+
+
+#------- NA omit
+BetaValues_noNA <- na.omit(BetaValues)
+write.table(BetaValues_noNA,"CXreport_Sort_30xCov_BetaValues_noNA.txt",quote=FALSE,sep ="\t",row.names=FALSE)
+
+#------- BA4 removal
+BetaValues_noNA_noMSA <- BetaValues_noNA[,1:109]
+write.table(BetaValues_noNA,"CXreport_Sort_30xCov_BetaValues_noNA_noMSA.txt",quote=FALSE,sep ="\t",row.names=FALSE)
+
+#------- WGA removal
+BetaValues_noNA_noMSA_noWGA <- BetaValues_noNA[,1:108]
+write.table(BetaValues_noNA,"CXreport_Sort_30xCov_BetaValues_noNA_noMSA_noWGA.txt",quote=FALSE,sep ="\t",row.names=FALSE)
+
+
+
+
+
+
+
+
+
+
+#--------------------------- Correlation Number
+library(reshape2)
+#------- Pearsons Correlation
+correl <- cor(BetaValues_noNA_noMSA_noWGA[,7:ncol(BetaValues_noNA_noMSA_noWGA)], method ="pearson")
+write.csv(correl,"CXreport_Sort_30xCov_BetaValues_noNA_noMSA_noWGA_PearsonCor.csv")
+
+#---------- Biological Replicates
+correl["B10","F12"] # 0.9574475
+#---------- Technical Replicates
+correl["E5","P2A10"] # 0.9617845
+correl[c("D9","P2A8"),c("D9","P2A9")] # 0.9592056 0.9556162 0.9684295
+
+
+#---------- Average Correlation
+library(reshape2)
+melted_correl <- melt(correl, na.rm = TRUE)
+mean(melted_correl$value,na.rm=FALSE)
+# 0.949952
+
+#---------- Outliers Below correlation >= 0.9
+aggregate(melted_correl$value, by=list(Category=melted_correl$Var2), FUN=mean)
+
+H11
+
+
+
+#--------------------------- Correlation Plot
+library(corrplot)
+#---------- Corrplot
+colramp <- colorRampPalette(c("#053061","#2166AC","#4393C3","#92C5DE","#D1E5F0","#FFFFFF", "#FDDBC7", "#F4A582","#D6604D","#B2182B","#67001F"))
+
+corrplot(correl, method="circle", col = colramp(200), title = "BetaValues_noNA_noBA4_noWGA",mar = c(1, 1, 2, 1), order="hclust", addrect=2,tl.cex = 0.4,tl.col = "black")
+
+dev.copy(png,"CXreport_Sort_30xCov_BetaValues_noNA_noMSA_noWGA_PearsonCor_corrplot.png",width=2000,height=2000,res=200)
+dev.off()
+
+
+#--------------------------- Correlation Plot PeiPei
+#--------- Use correlation between variables as distance
+reorder_cormat <- function(cormat){
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}
+
+#--------- Reorder the correlation matrix
+cormat <- reorder_cormat(correl)
+
+#--------- Reshape 
+melted_cormat <- melt(cormat, na.rm = TRUE)
+
+#--------- Heatmap
+library(ggplot2)
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value)) +
+geom_tile(color = "white") +
+scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(0,1), space = "Lab", 
+name="pearson\nCorrelation") +
+theme_minimal()+ 
+theme(axis.text.x = element_text(angle = 90, vjust = 1, 
+size = 8, hjust = 1))+
+coord_fixed()
+
+dev.copy(png,"CXreport_Sort_30xCov_BetaValues_noNA_noMSA_noWGA_PearsonCor.png",width=3000,height=3000,res=200)
+dev.off()
+
+#----------------------------------- Dendogram
+library(reshape2)
+
+#------- STDEV 
+stdev <- matrix(data = 0, nrow = nrow(BetaValues_noNA), ncol = 1)
+colnames(stdev) <- c("STDEV")
+
+BetaValues_noNA <- BetaValues_noNA_noMSA_noWGA
+
+for (i in 1:nrow(BetaValues_noNA)){ 
+stdev[i,1] <- sd(BetaValues_noNA[i,7:ncol(BetaValues_noNA)],na.rm = TRUE)
+next
+}
+
+BetaValues_noNA_STDEV <- data.frame(BetaValues_noNA,stdev)
+
+#---------- Order by STDEV 
+BetaValues_noNA_STDEV <- BetaValues_noNA_STDEV[order(-BetaValues_noNA_STDEV$STDEV),]
+
+#---------- Top10,000 
+BetaValues_noNA_STDEV <- BetaValues_noNA_STDEV[1:10000,]
+
+#-------- Transpose
+BetaValues_noNA_STDEV_t <- t(BetaValues_noNA_STDEV[,7:ncol(BetaValues_noNA)])
+
+#-------- Dendextend
+library(dendextend)
+dend <- as.dendrogram(hclust(dist(BetaValues_noNA_STDEV_t)))
+plot(dend,type="rectangle",ylab="Distance",main="BetaValues noNA Top10,000 STDEV")
+
+
+#--------  Colour Labels
+
+colours <- c("purple","green")[factor(covar$Replicate)]
+
+labels_colors(dend) <- colours[order.dendrogram(dend)]
+
+plot(dend,type="rectangle",ylab="Distance",main="BetaValues noNA Top10,000 STDEV")
+
+
+#-------- Colour Bars
+
+library(RColorBrewer)
+
+display.brewer.all()
+
+bars <- cbind(heat.colors(50)[covar$PMI], heat.colors(100)[covar$AGE], c("green4","orange3","red3","blue3")[factor(covar$Group)], c("blue3","red3")[factor(covar$SEX)])
+
+#colours <- topo.colors(13)[Covar$REPLICATES]
+#labels_colors(dend) <- colours[order.dendrogram(dend)]
+
+par(mar = c(6,4.5,2,0))
+
+labels_cex(dend) <- 0.5
+
+plot(dend, type = "rectangle",ylab="Height",main="BetaValues noNA Top10,000 STDEV")
+
+colored_bars(colors=bars,dend=dend,rowLabels=c("PMI","Age","Group","Sex"),cex.rowLabels=0.7,y_shift=-10,text_shift=0)
+
+
+
+dev.copy(png,"CXreport_Sort_30xCov_BetaValues_noNA_dendrogram.png",width=1000,height=1000,res=200)
+dev.off()
+
+#---------- R Remove Imprinted genes
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Padlock_Enhancer_Probes")
+
+library(readr)
+Targets <- read_table2("PD_Enh_Probes_Target_intersect.bed",col_names = FALSE)
+
+Imprited_genes <- Targets[!grepl("^E0|^adult",Targets$X4),]
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/PD_Auto_Lyso_GWAS_SNCA_Probes")
+
+Targets <- read_table2("PD_Auto_Lyso_GWAS_SNCA_Probes_Target_intersect.bed",col_names = FALSE)
+
+#---------- Remove Imprinted genes
+
+Targets_rmImprited <- subset(Targets, !(Targets$X4 %in% Imprited_genes$X4))
+
+write.table(Targets_rmImprited,file = 'PD_Auto_Lyso_GWAS_SNCA_Probes_Target_intersect_rmImprited.bed', quote=FALSE, sep='\t', col.names = FALSE, row.names=FALSE)
+
+
+#---------- Bedtools intersect target regions (1bp added to end of target region) 
+
+sed '1d' CXreport_Sort_30xCov_BetaValues > CXreport_Sort_30xCov_BetaValues.bed
+
+
+#---------- Filter C's only in Target Regions
+module load bedtools/2.25.0
+
+bedtools intersect -wa -s -u -a CXreport_Sort_30xCov_BetaValues.bed -b PD_Auto_Lyso_GWAS_SNCA_Probes_Target_intersect_rmImprited.bed > CXreport_Sort_30xCov_BetaValues_Target.bed
+
+head -n1 CXreport_Sort_30xCov_BetaValues > header
+cat header CXreport_Sort_30xCov_BetaValues_Target.bed > CXreport_Sort_30xCov_BetaValues_Target.txt
+
+#-------------------------------------------------- Subset Data
+
+#--------- Import Original Data
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/CXreports")
+
+library(readr)
+
+BetaValues <- read_delim("CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg.tsv", "\t", escape_double=FALSE, trim_ws=TRUE) 
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+covar <- read_delim("covar_subset","\t",escape_double=FALSE,trim_ws=TRUE)
+
+#--------- Subset Betavalues
+
+
+BetaValues_subset <- cbind(BetaValues[,1:6],BetaValues[,names(BetaValues) %in% covar$SAMPLE])
+
+#--------- Write
+
+write.table(BetaValues_subset,file="CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg.tsv",row.names=FALSE,col.names=TRUE,quote=FALSE,sep="\t")
+
+#---------------------------------------- 70%Count & rmAllNA & Comm SNPs
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/CXreports")
+
+rm(list = ls())
+
+library(readr)
+
+SNPlist <- read_delim("SNPlist_Common_Eur_Afr_phase3.txt"," ", escape_double=FALSE,col_names=FALSE,trim_ws=TRUE)
+
+colnames(SNPlist) <- c("chr","SNP","RS","Common","Varients")
+
+TotalReads <- read_delim("CXreport_Sort_Reads","\t",escape_double=FALSE,trim_ws=TRUE) 
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+Covar <- read_delim("covar_subset","\t",escape_double=FALSE,trim_ws=TRUE)
+
+BetaValues <- read_delim("CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg.tsv","\t", escape_double=FALSE, trim_ws=TRUE) 
+
+
+#---------------------------------------- Filter Cs
+
+#--------- Filter Cs >= 30% NAs)
+
+BetaValues_30na <- BetaValues[rowSums(is.na(BetaValues[,-1:-6])) <= nrow(Covar)*0.3,]
+
+#--------- Filter Cs with all 0% 
+
+BetaValues_30na <- BetaValues_30na[rowSums(BetaValues_30na[,-1:-6],na.rm=TRUE) > 0,] 
+
+#--------- Filter Cs for Common SNPs
+
+BetaValues_30na <- subset(BetaValues_30na, !((paste(BetaValues_30na$chr, BetaValues_30na$loc, sep="_") %in% paste(SNPlist$chr, SNPlist$SNP, sep="_")))) 
+
+#--------- Write
+
+write.table(BetaValues_30na,file="CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg_30na_rm0_SNP.tsv",row.names=FALSE,col.names=TRUE,quote=FALSE,sep="\t")
+
+
+
+#---------------------------------------- Filter Coverage
+
+#---------- Subset Total 
+
+BetaValues <- BetaValues_30na
+
+Reads <- subset(TotalReads[which(paste(TotalReads$chr,TotalReads$loc,sep="_") %in% paste(BetaValues$chr,BetaValues$loc,sep="_")),])
+
+#---------- NA <= 30x Coverage
+
+Reads_30x <- Reads
+Reads_30x[,-1:-6][Reads_30x[,-1:-6] <= 30] <- NA
+
+#---------- Remove Outliers
+
+Reads_30x <- subset(Reads_30x[,names(Reads_30x) %in% Covar$SAMPLE])
+Reads_30x <- cbind(Reads[,1:6],Reads_30x)
+
+#--------- Write
+
+write.table(Reads_30x,file="CXreport_Sort_Reads_30xCov_Target_Outliers_RepAvg_30na_rm0_SNP.tsv",row.names=FALSE,col.names=TRUE,quote=FALSE,sep="\t")
+
+-------------------------------------------------- Methylkit
+
+#---------- Input Files
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+rm(list = ls())
+
+covar <- read_delim("covar_subset","\t",escape_double=FALSE,trim_ws=TRUE)
+
+BetaValues <- 
+read_delim("CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg_30na_rm0_SNP.tsv", "\t",escape_double=FALSE,trim_ws=TRUE)
+
+Reads <- read_delim("CXreport_Sort_Reads_30xCov_Target_Outliers_RepAvg_30na_rm0_SNP.tsv", "\t",escape_double=FALSE,trim_ws=TRUE)
+
+#---------- Create CXreports
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset/30xCov_Target_Outliers_RepAvg_30na_rm0_SNP")
+
+for (i in 1:nrow(covar)) 
+{
+x <- covar$SAMPLE[i]
+
+CXreport <-cbind(chrBase=paste(BetaValues$chr,BetaValues$loc,sep="."), chr=BetaValues$chr, base=BetaValues$loc, strand=BetaValues$str, coverage=round(Reads[,x],digits=0), freqC=round(BetaValues[,x]*100,digits=2), freqT=round(100-(BetaValues[,x]*100),digits=2))
+
+names(CXreport)[5:7] <- c("coverage","freqC","freqT")
+CXreport[is.na(CXreport)] <- 0
+
+write.table(CXreport, paste(x,"Sort_30xCov_Target_Outliers_RepAvg_30na_rm0_SNP",sep="_"), row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+next
+}
+
+
+#---------------------------------------- CpG and CpH PDvsCTRL
+
+#---------- Import
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset/30xCov_Target_Outliers_RepAvg_30na_rm0_SNP")
+
+files <- as.data.frame(list.files(path = ".", pattern = "^.*SNP$", all.files = FALSE,full.names = FALSE, recursive = FALSE,ignore.case = FALSE, include.dirs = FALSE, no.. = FALSE))
+
+names(files) <- "CXreports"
+files$SAMPLE <- gsub("_.*$","",files$CXreports)
+files <- files[order(match(files$SAMPLE,covar$SAMPLE)),]
+fileslist <- as.list(as.character(files[,1]))
+
+
+#---------- MethylRead
+
+library(methylKit)
+library(gtools)
+
+Group <- as.numeric(as.character(factor(covar$Group,labels=c(0,1))))
+
+methyl <- methRead(location=fileslist,sample.id=as.list(covar$SAMPLE), assembly="hg19", treatment=Group, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+
+#---------- MethylUnite
+
+methylu <- unite(methyl,destrand=FALSE,min.per.group=1L,mc.cores=6)
+methylunite <- as.data.frame(as(methylu,"GRanges")) 
+
+methylunite$seqnames <- as.character(methylunite$seqnames)
+methylunite <- methylunite[order(methylunite$start),]
+methylunite <- methylunite[mixedorder(methylunite$seqnames),]
+
+#---------- MethylDMC
+
+covariates <- as.data.frame(model.matrix(~Group+AGE+PMI+proportions_GLU, data=covar))
+covariates <- covariates[,3:5]
+
+myDiff <- calculateDiffMeth(methylu, covariates=covariates, overdispersion="MN",adjust="fdr", test="Chisq", mc.cores=6)
+myDifference <- as.data.frame(as(myDiff,"GRanges")) 
+
+myDifference$seqnames <- as.character(myDifference$seqnames)
+myDifference <- myDifference[order(myDifference$start),]
+myDifference <- myDifference[mixedorder(myDifference$seqnames),]
+
+#---------- Export
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+write.csv(methylunite,"Methylkit_PDvsCTRL_age_pmi_propGLU_methyl.csv",row.names=FALSE)
+write.csv(myDifference,"Methylkit_PDvsCTRL_age_pmi_propGLU.csv",row.names=FALSE)
+
+myDifference_pval <- myDifference[myDifference$pvalue <= 0.05,]
+write.csv(myDifference_pval,"Methylkit_PDvsCTRL_age_pmi_propGLU_0.05pval.csv",row.names=FALSE)
+
+myDifference_FDR <- myDifference[myDifference$qvalue <= 0.05,]
+write.csv(myDifference_FDR,"Methylkit_PDvsCTRL_age_pmi_propGLU_0.05FDR.csv",row.names=FALSE)
+
+
+#---------------------------------------- Enrichment of Hypermethylated Regions
+#1450558 == Total Cs
+#169974 <= 0.05pvalue
+#2020007 <= 0.05 fdr
+summary(myDifference$meth.diff > 0) # 
+summary(myDifference_FDR$meth.diff > 0) # 
+
+phyper(6572,815683,634875,20007,lower.tail=FALSE) # pvalue = 1
+
+#-------------------------------------------------- GVIZ
+
+#---------- Import
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("Gviz", version = "3.8")
+library(Gviz)
+library(GenomicRanges)
+library(knitr)
+library(grid)
+library(ggbio)
+library(GenomicInteractions)
+library(InteractionSet)
+
+rm(list = ls())
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/CXreports")
+
+Probes <- 
+read_delim("PD_Auto_Lyso_GWAS_SNCA_Probes_Target_intersect_rmImprited.bed", "\t", escape_double=FALSE, trim_ws=TRUE, col_names=FALSE)
+names(Probes) <- c("chr","start","end","name","score","strand")
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+myDifference <- 
+
+read_delim("Methylkit_PDvsCTRL_age_pmi_propGLU.csv", ",",escape_double=FALSE,trim_ws=TRUE)
+
+myDifference_FDR <- 
+
+read_delim("Methylkit_PDvsCTRL_age_pmi_propGLU_0.05FDR.csv", ",",escape_double=FALSE,trim_ws=TRUE)
+
+#---------- Gene
+
+gene <- cbind("chr4",106000000,106300000,"TET2","hg19")
+
+#---------- Ideogram
+
+
+itrack <- IdeogramTrack(genome = gene[,5], chromosome = gene[,1], fontcolor="black",fontface=2,fontsize=12)
+
+#---------- Genome
+
+
+gtrack <- GenomeAxisTrack(genome = gene[,5], chromosome = gene[,1], fontcolor="black", fontface=2, fontsize=10, col="black")
+
+#---------- Biomart
+
+
+biotrack <- BiomartGeneRegionTrack(genome=gene[,5], chromosome=gene[,1], start=as.numeric(gene[,2]), end=as.numeric(gene[,3]), name="Ensemble", transcriptAnnotation="symbol", filter=list(with_ox_refseq_mrna=TRUE), fontcolor.group="black",fontface.group=2, fill="orange2", background.title="lightgray", col.title="black")
+
+plotTracks(list(itrack,gtrack,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+#---------- Probes
+
+Probe <- Probes[grep(paste("^",gene[,1],"$",sep=""),Probes$chr),]
+
+Probe <- AnnotationTrack(genome=gene[,5], chromosome=gene[,1], stacking="dense", start=Probe$start, end=Probe$end, name="Probes", background.title="lightgray", col.title="black", fontsize=12, rotation.title=90,
+
+col="transparent", fill="darkorchid4", min.width=0.5)
+
+plotTracks(list(itrack,gtrack,Probe,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+
+
+#---------- Total C's Sign PValue
+
+Csign <- cbind(myDifference[,1:3],sign(myDifference$meth.diff) * -log10(myDifference$pvalue))
+names(Csign) <- c("chr","start","end","sign_log10_Pvalue")
+Csign <- Csign[grep(paste("^",gene[,1],"$",sep=""),Csign$chr),]
+Csign_track <- DataTrack(genome=gene[,5], chromosome=gene[,1], type="p", start=Csign$start, end=Csign$end, data=Csign$sign_log10_Pvalue, name="Sign\n-log10(Pvalue)", background.title="lightgray", col.title="black", fontface=1, fontface.title=1, fontsize=12, col="darkblue", cex.axis=0.5, col.axis="black", lty.baseline=c(1,2,2), col.baseline=c("black","darkred","darkred"), baseline=c(0,-log10(0.00068958), log10(0.00068958)))
+#ylim=c(-15,15)
+#plotTracks(list(itrack,gtrack,Csign_track,Probe,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+
+#---------- DMC Methylation Difference
+
+DMC <- cbind(myDifference_FDR[,1:3],myDifference_FDR[,8])
+
+names(DMC) <- c("chr","start","end","DMC_MethDiff")
+DMC <- DMC[grep(paste("^",gene[,1],"$",sep=""),DMC$chr),]
+DMC_track <- DataTrack(genome=gene[,5], chromosome=gene[,1], type=c("p"), start=DMC$start, end=DMC$end, data=DMC$DMC_MethDiff, name="DMC\nMethylation (%)", background.title="lightgray", col.title="black", fontface=1, fontface.title=1, fontsize=12, col="darkred", cex.axis=0.5, col.axis="black", baseline=0, col.baseline="black", lty.baseline=1, line.title=1)
+#ylim=c(-10,10)
+ 
+
+#---------- DMC Methylation Difference
+
+TotalC <- cbind(myDifference[,1:3],myDifference[,8])
+
+names(TotalC) <- c("chr","start","end","TotalC")
+TotalC <- TotalC[grep(paste("^",gene[,1],"$",sep=""),TotalC$chr),]
+TotalC_track <- DataTrack(genome=gene[,5], chromosome=gene[,1], type=c("p","smooth"), start=TotalC$start, end=TotalC$end, data=TotalC$TotalC, name="TotalC\nMethylation (%)", background.title="lightgray", col.title="black", fontface=1, fontface.title=1, fontsize=12, col="darkgreen", cex.axis=0.5, col.axis="black", baseline=0, col.baseline="black", lty.baseline=1, line.title=1)
+plotTracks(list(itrack,gtrack,Csign_track,DMC_track,TotalC_track,Probe,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+-------------------------------------------------- PD34vsCTRL & PD56vsCTRL
+
+#---------- Import
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+rm(list = ls())
+
+covar <- read_delim("covar_subset","\t",escape_double=FALSE,trim_ws=TRUE)
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset/30xCov_Target_Outliers_RepAvg_30na_rm0_SNP")
+
+files <- as.data.frame(list.files(path = ".", pattern = "^.*SNP$", all.files = FALSE,full.names = FALSE, recursive = FALSE,ignore.case = FALSE, include.dirs = FALSE, no.. = FALSE))
+
+names(files) <- "CXreports"
+files$SAMPLE <- gsub("_.*$","",files$CXreports)
+files <- files[order(match(files$SAMPLE,covar$SAMPLE)),]
+
+#-------------------------------------------------- PD34vsCTRL
+
+covar34 <- covar[covar$PD_Braak_Stage %in% c(0,3,4),]
+files34 <- files[covar$PD_Braak_Stage %in% c(0,3,4),]
+files34 <- as.list(as.character(files34[,1]))
+
+#---------- MethylRead
+
+library(methylKit)
+library(gtools)
+
+Group <- as.numeric(as.character(factor(covar34$Group,labels=c(0,1))))
+
+methyl34 <- methRead(location=files34,sample.id=as.list(covar34$SAMPLE), assembly="hg19", treatment=Group, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+
+#---------- MethylUnite
+
+methylu34 <- unite(methyl34, destrand=FALSE, min.per.group=1L, mc.cores=6)
+
+#---------- MethylDMC
+
+covariates34 <- as.data.frame(model.matrix(~Group+AGE+PMI+proportions_GLU, data=covar34))
+covariates34 <- covariates34[,3:5]
+
+myDiff34 <- calculateDiffMeth(methylu34, covariates=covariates34, overdispersion="MN",adjust="fdr", test="Chisq", mc.cores=6)
+myDifference34 <- as.data.frame(as(myDiff34,"GRanges")) 
+
+myDifference34$seqnames <- as.character(myDifference34$seqnames)
+myDifference34 <- myDifference34[order(myDifference34$start),]
+myDifference34 <- myDifference34[mixedorder(myDifference34$seqnames),]
+
+#---------- Export
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+write.csv(myDifference34,"Methylkit_PD34vsCTRL_age_pmi_propGLU.csv",row.names=FALSE)
+
+myDifference34_pval <- myDifference34[myDifference34$pvalue <= 0.05,]
+write.csv(myDifference34_pval,"Methylkit_PD34vsCTRL_age_pmi_propGLU_0.05pval.csv",row.names=FALSE)
+
+myDifference34_FDR <- myDifference34[myDifference34$qvalue <= 0.05,]
+write.csv(myDifference34_FDR,"Methylkit_PD34vsCTRL_age_pmi_propGLU_0.05FDR.csv",row.names=FALSE)
+
+
+
+
+
+
+
+
+#-------------------------------------------------- PD56vsCTRL
+
+covar56 <- covar[covar$PD_Braak_Stage %in% c(0,5,6),]
+files56 <- files[covar$PD_Braak_Stage %in% c(0,5,6),]
+files56 <- as.list(as.character(files56[,1]))
+
+#---------- MethylRead
+
+library(methylKit)
+library(gtools)
+
+Group <- as.numeric(as.character(factor(covar56$Group,labels=c(0,1))))
+
+methyl56 <- methRead(location=files56,sample.id=as.list(covar56$SAMPLE), assembly="hg19", treatment=Group, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+
+#---------- MethylUnite
+
+methylu56 <- unite(methyl56, destrand=FALSE, min.per.group=1L, mc.cores=6)
+
+#---------- MethylDMC
+
+covariates56 <- as.data.frame(model.matrix(~Group+AGE+PMI+proportions_GLU, data=covar56))
+covariates56 <- covariates56[,3:5]
+
+myDiff56 <- calculateDiffMeth(methylu56, covariates=covariates56, overdispersion="MN",adjust="fdr", test="Chisq", mc.cores=6)
+myDifference56 <- as.data.frame(as(myDiff56,"GRanges")) 
+
+myDifference56$seqnames <- as.character(myDifference56$seqnames)
+myDifference56 <- myDifference56[order(myDifference56$start),]
+myDifference56 <- myDifference56[mixedorder(myDifference56$seqnames),]
+
+#---------- Export
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+write.csv(myDifference56,"Methylkit_PD56vsCTRL_age_pmi_propGLU.csv",row.names=FALSE)
+
+myDifference56_pval <- myDifference56[myDifference56$pvalue <= 0.05,]
+write.csv(myDifference56_pval,"Methylkit_PD56vsCTRL_age_pmi_propGLU_0.05pval.csv",row.names=FALSE)
+
+myDifference56_FDR <- myDifference56[myDifference56$qvalue <= 0.05,]
+write.csv(myDifference56_FDR,"Methylkit_PD56vsCTRL_age_pmi_propGLU_0.05FDR.csv",row.names=FALSE)
+
+#-------------------------------------------------- GVIZ PD56
+
+#---------- Import
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("Gviz", version = "3.8")
+library(Gviz)
+library(GenomicRanges)
+library(knitr)
+library(grid)
+library(ggbio)
+library(GenomicInteractions)
+library(InteractionSet)
+
+rm(list = ls())
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/CXreports")
+
+Probes <- 
+read_delim("PD_Auto_Lyso_GWAS_SNCA_Probes_Target_intersect_rmImprited.bed", "\t", escape_double=FALSE, trim_ws=TRUE, col_names=FALSE)
+names(Probes) <- c("chr","start","end","name","score","strand")
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/fulldata/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_preprocessing/methylkit_subset")
+
+myDifference56 <- 
+
+read_delim("Methylkit_PD56vsCTRL_age_pmi_propGLU.csv", ",",escape_double=FALSE,trim_ws=TRUE)
+
+myDifference56_FDR <- 
+
+read_delim("Methylkit_PD56vsCTRL_age_pmi_propGLU_0.05FDR.csv", ",", escape_double=FALSE, trim_ws=TRUE)
+
+#---------- Gene
+
+gene <- cbind("chr4",106000000,106300000,"TET2","hg19")
+
+#---------- Ideogram
+
+
+itrack <- IdeogramTrack(genome = gene[,5], chromosome = gene[,1], fontcolor="black",fontface=2,fontsize=12)
+
+#---------- Genome
+
+
+gtrack <- GenomeAxisTrack(genome = gene[,5], chromosome = gene[,1], fontcolor="black", fontface=2, fontsize=10, col="black")
+
+#---------- Biomart
+
+
+biotrack <- BiomartGeneRegionTrack(genome=gene[,5], chromosome=gene[,1], start=as.numeric(gene[,2]), end=as.numeric(gene[,3]), name="Ensemble", transcriptAnnotation="symbol", filter=list(with_ox_refseq_mrna=TRUE), fontcolor.group="black",fontface.group=2, fill="orange2", background.title="lightgray", col.title="black")
+
+plotTracks(list(itrack,gtrack,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+#---------- Probes
+
+Probe <- Probes[grep(paste("^",gene[,1],"$",sep=""),Probes$chr),]
+
+Probe <- AnnotationTrack(genome=gene[,5], chromosome=gene[,1], stacking="dense", start=Probe$start, end=Probe$end, name="Probes", background.title="lightgray", col.title="black", fontsize=12, rotation.title=90,
+
+col="transparent", fill="darkorchid4", min.width=0.5)
+
+plotTracks(list(itrack,gtrack,Probe,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+
+
+#---------- Total C's Sign PValue
+
+Csign <- cbind(myDifference56[,1:3],sign(myDifference56$meth.diff) * -log10(myDifference56$pvalue))
+names(Csign) <- c("chr","start","end","sign_log10_Pvalue")
+Csign <- Csign[grep(paste("^",gene[,1],"$",sep=""),Csign$chr),]
+Csign_track <- DataTrack(genome=gene[,5], chromosome=gene[,1], type="p", start=Csign$start, end=Csign$end, data=Csign$sign_log10_Pvalue, name="Sign\n-log10(Pvalue)", background.title="lightgray", col.title="black", fontface=1, fontface.title=1, fontsize=12, col="darkblue", cex.axis=0.5, col.axis="black", lty.baseline=c(1,2,2), col.baseline=c("black","darkred","darkred"), baseline=c(0,-log10(0.00098), log10(0.00098)))
+#ylim=c(-15,15)
+#plotTracks(list(itrack,gtrack,Csign_track,Probe,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+
+#---------- DMC Methylation Difference
+
+DMC <- cbind(myDifference56_FDR[,1:3],myDifference56_FDR[,8])
+
+names(DMC) <- c("chr","start","end","DMC_MethDiff")
+DMC <- DMC[grep(paste("^",gene[,1],"$",sep=""),DMC$chr),]
+DMC_track <- DataTrack(genome=gene[,5], chromosome=gene[,1], type=c("p"), start=DMC$start, end=DMC$end, data=DMC$DMC_MethDiff, name="DMC\nMethylation (%)", background.title="lightgray", col.title="black", fontface=1, fontface.title=1, fontsize=12, col="darkred", cex.axis=0.5, col.axis="black", baseline=0, col.baseline="black", lty.baseline=1, line.title=1)
+#ylim=c(-10,10)
+plotTracks(list(itrack,gtrack,Csign_track,DMC_track,Probe,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+#---------- DMC Methylation Difference
+
+TotalC <- cbind(myDifference[,1:3],myDifference[,8])
+
+names(TotalC) <- c("chr","start","end","TotalC")
+TotalC <- TotalC[grep(paste("^",gene[,1],"$",sep=""),TotalC$chr),]
+TotalC_track <- DataTrack(genome=gene[,5], chromosome=gene[,1], type=c("p","smooth"), start=TotalC$start, end=TotalC$end, data=TotalC$TotalC, name="TotalC\nMethylation (%)", background.title="lightgray", col.title="black", fontface=1, fontface.title=1, fontsize=12, col="darkgreen", cex.axis=0.5, col.axis="black", baseline=0, col.baseline="black", lty.baseline=1, line.title=1)
+plotTracks(list(itrack,gtrack,Csign_track,DMC_track,TotalC_track,Probe,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+
+
+
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/Resources/Roadmap_chromHMM18")
+
+NIH RoadMap
+You can downoad all the Chromatin data and find all the information you need from the following link:
+https://egg2.wustl.edu/roadmap/web_portal/
+E071: Brain Hippocampus Middle
+E072: Brain Inferior Temporal Lobe
+E073: Brain Dorsolateral Prefrontal Cortex
+E074: Brain Substantia Nigeria
+
+
+library(rtracklayer)
+
+E073 <- import("E073_25_imputed12marks_dense.bed", format="bed")
+E073 <- data.frame(E073)
+
+#---------- Promoter
+
+Promoter <- E073[grep(paste("^",gene[,1],"$",sep=""),E073$seqnames),]
+Promoter <- Promoter[grep("Prom", Promoter$name), ]
+Promoter <- AnnotationTrack(genome=gene[,5], chromosome=gene[,1], stacking="dense", start=Promoter$start, end=Promoter$end, name="Promoter", background.title="lightgray", col.title="black", fontsize=12, rotation.title=90, col="transparent", fill="darkorchid4", min.width=0.5)
+
+
+#---------- Enhancer
+
+Enhancer <- E073[grep(paste("^",gene[,1],"$",sep=""),E073$seqnames),]
+Enhancer <- Enhancer[grep("EnhA", Enhancer$name), ]
+Enhancer <- AnnotationTrack(genome=gene[,5], chromosome=gene[,1], stacking="dense", start=Enhancer$start, end=Enhancer$end, name="Enhancer", background.title="lightgray", col.title="black", fontsize=12, rotation.title=90, col="transparent", fill="darkorchid4", min.width=0.5)
+
+plotTracks(list(itrack,gtrack,Csign_track,DMC_track,Probe,Promoter,Enhancer,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
