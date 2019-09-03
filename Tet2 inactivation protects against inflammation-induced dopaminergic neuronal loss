@@ -1,0 +1,776 @@
+#------------------------------ Tet2 inactivation protects against inflammation-induced dopaminergic neuronal loss
+
+#-------------------------------------------------- Rawdata
+
+qsubs --name scp_data --cmd "scp -r /home/lee.marshall/labrie-primary/Bioinformatics_labrielab/Raw_data/Mouse\ LPS\ 24hr\ 12_2018/LABV_20181126_RNA ."
+
+#-------------------------------------------------- Indexing
+
+
+#--------- Ensembl_GRCm38_p6_Unmasked_noscaffolds
+
+cd /home/lee.marshall/labrie-primary/Bioinformatics_core/genomes/Mouse/Ensembl_GRCm38_p6_Unmasked_noscaffolds/original
+
+https://useast.ensembl.org/Mus_musculus/Info/Index
+ftp://ftp.ensembl.org/pub/release-95/fasta/mus_musculus/dna/
+
+for i in `cat list` ; do cat split/${i} ; done > Ensembl_GRCm38_p6_Unmasked_noscaffolds.fa
+
+#--------- GRCm38_Gencode_vM20
+
+cd /home/lee.marshall/labrie-primary/Bioinformatics_core/transcriptomes/Mouse/Ensembl_GRCm38_Gencode_vM20
+
+ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M20/gencode.vM20.annotation.gtf.gz
+
+#--------- STAR INDEX 
+
+module load star/2.5.3a
+
+qsubs --names star_index --cores 10 --cmd "STAR --runThreadN 10 --runMode genomeGenerate --genomeDir star_index_75bp --genomeFastaFiles Ensembl_GRCm38_p6_Unmasked_noscaffolds.fa --sjdbGTFfile gencode.vM20.annotation.gtf --sjdbOverhang 75"
+
+#--------- RSEM INDEX
+
+module load rsem/1.3.0
+
+qsubs --names rsem_index --cores 10 --cmd "rsem-prepare-reference --num-threads 10 --gtf gencode.vM20.annotation.gtf Ensembl_GRCm38_p6_Unmasked_noscaffolds.fa rsem_index/rsem"
+
+-------------------------------------------------- Alignment
+
+#---------- LABV_20181126_RNA
+
+#---------- FastQC
+
+module load fastqc/0.11.5
+qsubs --names fastqc_pretrim --array names --cmd "fastqc --outdir fastqc fastq/SAMPLE.fastq.gz"
+
+#---------- Trimgalore
+
+module load trimgalore/0.4.4
+qsubs --names trimgalore_fastqc --array names --cmd "trim_galore --fastqc --output_dir trimgalore fastq/SAMPLE.fastq.gz"
+
+#---------- Star
+
+module load star/2.5.3a
+qsubs --names star_align --cores 6 --array names --cmd "STAR --runMode alignReads --runThreadN 6 \
+--genomeDir /home/lee.marshall/labrie-primary/Bioinformatics_core/transcriptomes/Mouse/Ensembl_GRCm38_Gencode_vM20/star_index_75bp \
+--genomeLoad NoSharedMemory --readFilesIn trimgalore/SAMPLE_trimmed.fq.gz \
+--readFilesCommand zcat --outFileNamePrefix star/SAMPLE --outReadsUnmapped None \
+--outSAMtype BAM SortedByCoordinate --outFilterMismatchNoverLmax 0.1 --quantMode TranscriptomeSAM GeneCounts"
+
+
+#---------- Multiqc
+
+qsubs --names multiqc_posttrim --cmd "multiqc ." 
+
+
+#-------------------------------------------------- STAR gene counts
+
+#---------- 2nd read strand aligned
+
+for i in `cat names` ; do 
+awk -v OFS='\t' 'FNR>4{print $1, $4}' star/${i}ReadsPerGene.out.tab | sed -e 's/\..*\t/\t/' > edgeR/genecounts/${i}_genecounts
+done
+
+#---------- Rename counts
+
+while read line ; do mv $(awk '{print $1"_genecounts", $2"_genecounts"}' <<<$line) ; done < names
+
+#-------------------------------------------------- TMM Normalization
+ 
+rm(list=ls(all=TRUE))
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) + install.packages("BiocManager")
+BiocManager::install("dendextend", version = "3.8")
+
+library(edgeR)
+library(readr)
+library(ggfortify)
+library(dendextend)
+library(reshape2)
+library(ExpressionNormalizationWorkflow)
+library(sva)
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+library(RColorBrewer)
+library(RUVSeq)
+
+#---------- Import
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR")
+
+covar <- read_delim("covar.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+rownames(covar) <- covar$SAMPLE
+
+counts <- paste(covar$SAMPLE,"_genecounts",sep="")
+counts <- readDGE(counts,path="genecounts",columns=c(1,2),header=FALSE)
+counts <- counts$counts
+colnames(counts) <- sub("_genecounts","",colnames(counts),ignore.case=FALSE,fixed=FALSE)
+ 
+#---------- DGEList 
+ 
+y <- DGEList(counts, group=covar$GROUP)
+
+#---------- Filtering
+
+keep <- rowSums(cpm(y)>1) >= ncol(counts)
+y <- y[keep, , keep.lib.sizes=FALSE]
+dim(y) #14121
+ 
+#---------- TMM Normalization
+
+y <- calcNormFactors(y,method="TMM")
+
+#---------- CPM
+
+cpm <- cpm(y,normalized.lib.sizes=TRUE, log=FALSE)
+write.csv(cpm,file="cpm.csv")
+logcpm <- cpm(y,normalized.lib.sizes=TRUE, log=TRUE)
+write.csv(logcpm, file="logcpm.csv")
+
+#--------------------------- Pearsons Correlation
+
+correl <- cor(logcpm, method ="pearson")
+
+#---------- Average Correlation
+
+correl <- melt(correl, na.rm = TRUE)
+mean(correl$value,na.rm=FALSE)
+0.9728973
+
+#---------- Outliers Below correlation >= 0.9
+
+aggregate(correl$value, by=list(Category=correl$Var2), FUN=mean)
+TET2wt_sal_277 0.9035345
+
+#---------- Remove outliers
+
+covar <- covar[covar$SAMPLE != "TET2wt_sal_277",]
+write.table(covar, file = "covar.tsv", append=F, quote=F, sep = "\t", row=F, col=T)
+
+counts <- counts[,colnames(counts) != "TET2wt_sal_277"]
+
+#---------- PCA Plots
+
+library(RColorBrewer)
+colors <- brewer.pal(4, "Set2")
+
+plotPCA(logcpm, col=colors[as.factor(covar$GROUP)], cex=1.2)
+
+
+#---------- ExpressionNormalizationWorkflow
+
+expSet <- expSetobj(logcpm,covar)
+
+#---------- PVCA
+
+pvcAnaly(expSet, 0.75, c("GROUP", "AGE", "SEX", "RIN"))
+
+aggregate(covar$neurons, by=list(Category=covar$GROUP), FUN=mean)
+t.test(covar$neurons[1:12],covar$neurons[13:36])
+
+#------------------------------------------------------------ EdgeR Contrast 
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR")
+
+#---------- Import
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("RUVSeq", version = "3.8")
+
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+columns(org.Hs.eg.db)
+library("org.Mm.eg.db")
+columns(org.Mm.eg.db)
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+
+library(RColorBrewer)
+library(RUVSeq)
+
+
+#---------- Design
+
+design <- model.matrix(~ 0 + GROUP, data=covar)
+colnames(design) <- c("TET2ko_LPS","TET2ko_sal","TET2wt_LPS","TET2wt_sal")
+
+#---------- Estimate Dispersion
+
+y <- estimateDisp(y, design)
+
+#---------- Quasi-likelihood Fit
+
+fit <- glmQLFit(y, design)
+
+#--------- Contrast
+
+contrast <- makeContrasts(TET2ko_LPSvsSal=TET2ko_LPS-TET2ko_sal,TET2wt_LPSvsSal=TET2wt_LPS-TET2wt_sal, TET2kovswt_LPSvsSal=((TET2ko_LPS-TET2ko_sal)-(TET2wt_LPS-TET2wt_sal)), levels=design)
+
+#--------- Quasi-likelihood FTest
+
+TET2ko_LPSvsSal <- glmQLFTest(fit, contrast=contrast[,"TET2ko_LPSvsSal"])
+TET2ko_LPSvsSal <- topTags(TET2ko_LPSvsSal, n=Inf, adjust.method="BH", sort="none")$table
+
+TET2wt_LPSvsSal <- glmQLFTest(fit, contrast=contrast[,"TET2wt_LPSvsSal"])
+TET2wt_LPSvsSal <- topTags(TET2wt_LPSvsSal, n=Inf, adjust.method="BH", sort="none")$table
+
+TET2kovswt_LPSvsSal <- glmQLFTest(fit, contrast=contrast[,"TET2kovswt_LPSvsSal"])
+TET2kovswt_LPSvsSal <- topTags(TET2kovswt_LPSvsSal, n=Inf, adjust.method="BH", sort="none")$table
+
+#---------- Change Names to Entrez
+
+TET2ko_LPSvsSal$symbol <- mapIds(org.Mm.eg.db, keys=row.names(TET2ko_LPSvsSal), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+TET2ko_LPSvsSal$entrez <- mapIds(org.Mm.eg.db, keys=row.names(TET2ko_LPSvsSal), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+TET2wt_LPSvsSal$symbol <- mapIds(org.Mm.eg.db, keys=row.names(TET2wt_LPSvsSal), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+TET2wt_LPSvsSal$entrez <- mapIds(org.Mm.eg.db, keys=row.names(TET2wt_LPSvsSal), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+TET2kovswt_LPSvsSal$symbol <- mapIds(org.Mm.eg.db, keys=row.names(TET2kovswt_LPSvsSal), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+TET2kovswt_LPSvsSal$entrez <- mapIds(org.Mm.eg.db, keys=row.names(TET2kovswt_LPSvsSal), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+#---------- combine gene names & cpm counts
+
+TET2ko_LPSvsSal <- cbind(TET2ko_LPSvsSal,cpm)
+write.csv(TET2ko_LPSvsSal, file="TET2ko_LPSvsSal_glmQLF_contrast.csv")
+
+TET2wt_LPSvsSal <- cbind(TET2wt_LPSvsSal,cpm)
+write.csv(TET2ko_LPSvsSal, file="TET2wt_LPSvsSal_glmQLF_contrast.csv")
+
+TET2kovswt_LPSvsSal <- cbind(TET2kovswt_LPSvsSal,cpm)
+write.csv(TET2ko_LPSvsSal, file="TET2kovswt_LPSvsSal_glmQLF_contrast.csv")
+
+#---------- PValue <= 0.05
+
+TET2ko_LPSvsSal_PVAL <- TET2ko_LPSvsSal[TET2ko_LPSvsSal$PValue <= 0.05,]
+write.csv(TET2ko_LPSvsSal_PVAL, file="TET2ko_LPSvsSal_glmQLF_contrast_0.05PVAL.csv")
+
+TET2wt_LPSvsSal_PVAL <- TET2wt_LPSvsSal[TET2wt_LPSvsSal$PValue <= 0.05,]
+write.csv(TET2wt_LPSvsSal_PVAL, file="TET2wt_LPSvsSal_glmQLF_contrast_0.05PVAL.csv")
+
+TET2kovswt_LPSvsSal_PVAL <- TET2kovswt_LPSvsSal[TET2kovswt_LPSvsSal$PValue <= 0.05,]
+write.csv(TET2kovswt_LPSvsSal_PVAL, file="TET2kovswt_LPSvsSal_glmQLF_contrast_0.05PVAL.csv")
+
+#---------- FDR <= 0.05
+ 
+TET2ko_LPSvsSal_FDR <- TET2ko_LPSvsSal[TET2ko_LPSvsSal$FDR <= 0.05,]
+write.csv(TET2ko_LPSvsSal_FDR, file="TET2ko_LPSvsSal_glmQLF_contrast_0.05FDR.csv")
+
+TET2wt_LPSvsSal_FDR <- TET2wt_LPSvsSal[TET2wt_LPSvsSal$FDR <= 0.05,]
+write.csv(TET2wt_LPSvsSal_FDR, file="TET2wt_LPSvsSal_glmQLF_contrast_0.05FDR.csv")
+
+TET2kovswt_LPSvsSal_FDR <- TET2kovswt_LPSvsSal[TET2kovswt_LPSvsSal$FDR <= 0.05,]
+write.csv(TET2kovswt_LPSvsSal_FDR, file="TET2kovswt_LPSvsSal_glmQLF_contrast_0.05FDR.csv")
+
+
+#---------- VennDiagram
+
+library(VennDiagram)
+
+grid.newpage()
+draw.pairwise.venn(1040, 821, 591, category = c("TET2ko_LPSvsSal", "TET2wt_LPSvsSal"), lty = rep("blank",2), fill = c("red","blue"), alpha = rep(0.5,2), cex=rep(2,3), cat.pos = c(-20,20), cat.dist=rep(0.03,2), cat.cex=rep(1,2))
+
+#------------------------------------------------------------ EdgeR RUVg
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR")
+
+#---------- Stable Genes
+
+empirical <- TET2ko_LPSvsSal$PValue >= 0.25 & TET2wt_LPSvsSal$PValue >= 0.25 & TET2kovswt_LPSvsSal$PValue 
+
+#---------- PCA Plots
+
+library(RColorBrewer)
+colors <- brewer.pal(4, "Set2")
+
+plotPCA(logcpm, col=colors[as.factor(covar$GROUP)], cex=1.2)
+plotPCA(RUVg(logcpm, empirical, k=1, isLog=TRUE)$normalizedCounts, col=colors[as.factor(covar$GROUP)], cex=1.2, labels=FALSE)
+
+#---------- RUVg
+
+covar$RUVg <- round(RUVg(logcpm, empirical, k=1, isLog=TRUE)$W, digits=3)
+write.table(covar, file = "covar.tsv", append=F, quote=F, sep = "\t", row=F, col=T)
+
+
+#---------- Design
+
+RUVg_logcpm <- RUVg(logcpm, empirical, k=1, isLog=TRUE)$normalizedCounts
+
+design <- model.matrix(~ 0 + GROUP + RUVg, data=covar)
+colnames(design)[1:4] <- c("TET2ko_LPS","TET2ko_sal","TET2wt_LPS","TET2wt_sal")
+
+#---------- Estimate Dispersion
+
+y <- estimateDisp(y, design)
+
+#---------- Quasi-likelihood Fit
+
+fit <- glmQLFit(y, design)
+
+#--------- Contrast
+
+contrast <- makeContrasts(TET2ko_LPSvsSal=TET2ko_LPS-TET2ko_sal,TET2wt_LPSvsSal=TET2wt_LPS-TET2wt_sal, TET2kovswt_LPSvsSal=((TET2ko_LPS-TET2ko_sal)-(TET2wt_LPS-TET2wt_sal)), levels=design)
+
+#--------- Quasi-likelihood FTest
+
+TET2ko_LPSvsSal_RUVg <- glmQLFTest(fit, contrast=contrast[,"TET2ko_LPSvsSal"])
+TET2ko_LPSvsSal_RUVg <- topTags(TET2ko_LPSvsSal_RUVg, n=Inf, adjust.method="BH", sort="none")$table
+
+TET2wt_LPSvsSal_RUVg <- glmQLFTest(fit, contrast=contrast[,"TET2wt_LPSvsSal"])
+TET2wt_LPSvsSal_RUVg <- topTags(TET2wt_LPSvsSal_RUVg, n=Inf, adjust.method="BH", sort="none")$table
+
+TET2kovswt_LPSvsSal_RUVg <- glmQLFTest(fit, contrast=contrast[,"TET2kovswt_LPSvsSal"])
+TET2kovswt_LPSvsSal_RUVg <- topTags(TET2kovswt_LPSvsSal_RUVg, n=Inf, adjust.method="BH", sort="none")$table
+
+#---------- Change Names to Entrez
+
+TET2ko_LPSvsSal_RUVg$symbol <- mapIds(org.Mm.eg.db, keys=row.names(TET2ko_LPSvsSal_RUVg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+TET2ko_LPSvsSal_RUVg$entrez <- mapIds(org.Mm.eg.db, keys=row.names(TET2ko_LPSvsSal_RUVg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+TET2wt_LPSvsSal_RUVg$symbol <- mapIds(org.Mm.eg.db, keys=row.names(TET2wt_LPSvsSal_RUVg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+TET2wt_LPSvsSal_RUVg$entrez <- mapIds(org.Mm.eg.db, keys=row.names(TET2wt_LPSvsSal_RUVg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+TET2kovswt_LPSvsSal_RUVg$symbol <- mapIds(org.Mm.eg.db, keys=row.names(TET2kovswt_LPSvsSal_RUVg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+TET2kovswt_LPSvsSal_RUVg$entrez <- mapIds(org.Mm.eg.db, keys=row.names(TET2kovswt_LPSvsSal_RUVg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+#---------- combine gene names & cpm counts
+
+TET2ko_LPSvsSal_RUVg <- cbind(TET2ko_LPSvsSal_RUVg,cpm)
+write.csv(TET2ko_LPSvsSal_RUVg, file="TET2ko_LPSvsSal_glmQLF_RUVg_contrast.csv")
+
+TET2wt_LPSvsSal_RUVg <- cbind(TET2wt_LPSvsSal_RUVg,cpm)
+write.csv(TET2wt_LPSvsSal_RUVg, file="TET2wt_LPSvsSal_glmQLF_RUVg_contrast.csv")
+
+TET2kovswt_LPSvsSal <- cbind(TET2kovswt_LPSvsSal,cpm)
+write.csv(TET2ko_LPSvsSal, file="TET2kovswt_LPSvsSal_glmQLF_RUVg_contrast.csv")
+
+#---------- PValue <= 0.05
+
+TET2ko_LPSvsSal_RUVg_PVAL <- TET2ko_LPSvsSal_RUVg[TET2ko_LPSvsSal_RUVg$PValue <= 0.05,]
+write.csv(TET2ko_LPSvsSal_RUVg_PVAL, file="TET2ko_LPSvsSal_glmQLF_RUVg_contrast_0.05PVAL.csv")
+
+TET2wt_LPSvsSal_RUVg_PVAL <- TET2wt_LPSvsSal_RUVg[TET2wt_LPSvsSal_RUVg$PValue <= 0.05,]
+write.csv(TET2wt_LPSvsSal_RUVg_PVAL, file="TET2wt_LPSvsSal_glmQLF_RUVg_contrast_0.05PVAL.csv")
+
+TET2kovswt_LPSvsSal_RUVg_PVAL <- TET2kovswt_LPSvsSal_RUVg[TET2kovswt_LPSvsSal_RUVg$PValue <= 0.05,]
+write.csv(TET2kovswt_LPSvsSal_RUVg_PVAL, file="TET2kovswt_LPSvsSal_glmQLF_RUVg_contrast_0.05PVAL.csv")
+
+#---------- FDR <= 0.05
+ 
+TET2ko_LPSvsSal_RUVg_FDR <- TET2ko_LPSvsSal_RUVg[TET2ko_LPSvsSal_RUVg$FDR <= 0.05,]
+write.csv(TET2ko_LPSvsSal_RUVg_FDR, file="TET2ko_LPSvsSal_glmQLF_RUVg_contrast_0.05FDR.csv")
+
+TET2wt_LPSvsSal_RUVg_FDR <- TET2wt_LPSvsSal_RUVg[TET2wt_LPSvsSal_RUVg$FDR <= 0.05,]
+write.csv(TET2wt_LPSvsSal_RUVg_FDR, file="TET2wt_LPSvsSal_glmQLF_RUVg_contrast_0.05FDR.csv")
+
+TET2kovswt_LPSvsSal_RUVg_FDR <- TET2kovswt_LPSvsSal_RUVg[TET2kovswt_LPSvsSal_RUVg$FDR <= 0.05,]
+write.csv(TET2kovswt_LPSvsSal_RUVg_FDR, file="TET2kovswt_LPSvsSal_glmQLF_RUVg_contrast_0.05FDR.csv")
+
+#---------- VennDiagram
+
+library(VennDiagram)
+
+sum(rownames(TET2ko_LPSvsSal_RUVg_FDR) %in% rownames(TET2wt_LPSvsSal_RUVg_FDR))
+
+grid.newpage()
+draw.pairwise.venn(1860, 1616, 1017, category = c("TET2ko_LPSvsSal_RUVg", "TET2wt_LPSvsSal_RUVg"), lty = rep("blank",2), fill = c("red","blue"), alpha = rep(0.5,2), cex=rep(2,3), cat.pos = c(-20,20), cat.dist=rep(0.03,2), cat.cex=rep(1,2))
+
+
+
+TET2ko_LPSvsSal_RUVg_FDR_1logfc <- TET2ko_LPSvsSal_RUVg_FDR[abs(TET2ko_LPSvsSal_RUVg_FDR$logFC) >= 1,]
+TET2wt_LPSvsSal_RUVg_FDR_1logfc <- TET2wt_LPSvsSal_RUVg_FDR[abs(TET2wt_LPSvsSal_RUVg_FDR$logFC) >= 1,]
+
+
+sum(rownames(TET2ko_LPSvsSal_RUVg_FDR_1logfc) %in% rownames(TET2wt_LPSvsSal_RUVg_FDR_1logfc))
+
+
+#---------- Plot
+
+ggplot(TET2ko_LPSvsSal_RUVg, aes(x=logFC,y=-log10(PValue))) + 
+geom_point(size=1,colour="grey50") + 
+geom_point(data=TET2wt_LPSvsSal_RUVg, size=1, colour="grey") +
+geom_point(data=TET2wt_LPSvsSal_RUVg_FDR_1logfc, size=1, colour="brown3") +
+geom_point(data=TET2ko_LPSvsSal_RUVg_FDR_1logfc, size=1, colour="brown4") +
+scale_x_continuous(breaks=seq(-3,4,1) , limits=c(-3,4)) + 
+scale_y_continuous(breaks=seq(0,10,2), limits=c(0,10)) +     
+labs(x="LogFC",y="-log10(PValue)") +
+theme_bw() +
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust=0.5,size=10,face="bold.italic",family="Helvetica"),
+panel.grid.major=element_blank(),
+panel.grid.minor=element_blank(),
+panel.background=element_blank(),
+panel.border=element_blank(),
+axis.title.x=element_text(size=18,family="Helvetica"),
+axis.title.y=element_text(size=18,family="Helvetica",vjust=0),        
+axis.text.x=element_text(colour="black",size=10,family="Helvetica"),
+axis.text.y=element_text(colour="black",size=10,family="Helvetica"),
+axis.line=element_line(colour="black"))
+
+#-------------------------------------------------- GSEA 
+
+
+http://pathwaycommons.github.io/guide/workflows/rna_seq_to_enrichment_map/index/
+http://pathwaycommons.github.io/guide/workflows/rna_seq_to_enrichment_map_r_notebook/index.html
+http://baderlab.org/Software/EnrichmentMap#User_Guide
+http://download.baderlab.org/EM_Genesets/Human_GOBP_AllPathways_no_GO_iea_November_01_2017_symbol.gmt
+
+#---------- Import
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR/TET2ko_LPSvsSal_glmQLF_RUVg")
+
+#--------- Expression (.txt)
+
+exp_df <- data.frame(NAME=TET2ko_LPSvsSal_RUVg$symbol, DESCRIPTION=TET2ko_LPSvsSal_RUVg$symbol, stringsAsFactors=FALSE)
+exp_df <- data.frame(exp_df,RUVg_logcpm)
+exp_df <- exp_df[!is.na(exp_df$NAME),]
+exp_df <- exp_df[!duplicated(exp_df$NAME),]
+write.table(exp_df, file="expression.txt", sep="\t", row=F, quote=F)
+
+#--------- Rank list file (.rnk)
+
+rank_df <- sign(TET2ko_LPSvsSal_RUVg$logFC) * (-1) * log10(TET2ko_LPSvsSal_RUVg$PValue)
+rank_df <- sapply(rank_df,function(x) replace(x,is.infinite(x),sign(x) * ((max(rank_df[rank_df !=Inf])) + runif(1))))
+rank_df <- data.frame(gene=TET2ko_LPSvsSal_RUVg$symbol, rank=rank_df, stringsAsFactors=FALSE)
+rank_df <- rank_df[!is.na(rank_df$gene),]
+rank_df <- rank_df[order(rank_df[,2], decreasing=TRUE),]
+rank_df <- rank_df[!duplicated(rank_df$gene),]
+write.table(rank_df,file="rank_df.rnk",quote=FALSE,sep="\t",row.names=FALSE)
+
+#--------- Class file (.cls)
+
+cls_df <- rbind(paste(ncol(RUVg_logcpm),"1","2"),paste("#CTRL","PD"),paste(covar$GROUP,collapse=" "))
+write.table(cls_df,file="class.cls",quote=FALSE,sep=" ",row.names=FALSE)
+
+
+#---------- Import
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR/TET2wt_LPSvsSal_glmQLF_RUVg")
+
+#--------- Expression (.txt)
+
+exp_df <- data.frame(NAME=TET2wt_LPSvsSal_RUVg$symbol, DESCRIPTION=TET2wt_LPSvsSal_RUVg$symbol, stringsAsFactors=FALSE)
+exp_df <- data.frame(exp_df,RUVg_logcpm)
+exp_df <- exp_df[!is.na(exp_df$NAME),]
+exp_df <- exp_df[!duplicated(exp_df$NAME),]
+write.table(exp_df, file="expression.txt", sep="\t", row=F, quote=F)
+
+#--------- Rank list file (.rnk)
+
+rank_df <- sign(TET2wt_LPSvsSal_RUVg$logFC) * (-1) * log10(TET2wt_LPSvsSal_RUVg$PValue)
+rank_df <- sapply(rank_df,function(x) replace(x,is.infinite(x),sign(x) * ((max(rank_df[rank_df !=Inf])) + runif(1))))
+rank_df <- data.frame(gene=TET2wt_LPSvsSal_RUVg$symbol, rank=rank_df, stringsAsFactors=FALSE)
+rank_df <- rank_df[!is.na(rank_df$gene),]
+rank_df <- rank_df[order(rank_df[,2], decreasing=TRUE),]
+rank_df <- rank_df[!duplicated(rank_df$gene),]
+write.table(rank_df,file="rank_df.rnk",quote=FALSE,sep="\t",row.names=FALSE)
+
+#--------- Class file (.cls)
+
+cls_df <- rbind(paste(ncol(RUVg_logcpm),"1","2"),paste("#CTRL","PD"),paste(covar$GROUP,collapse=" "))
+write.table(cls_df,file="class.cls",quote=FALSE,sep=" ",row.names=FALSE)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#-------------------------------------------------- GSEA unix script
+
+cd /Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR/TET2ko_LPSvsSal_glmQLF_RUVg
+cd /Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR/TET2wt_LPSvsSal_glmQLF_RUVg
+
+#--------- Check software
+
+java -cp /Applications/gsea_3.0/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked -help
+
+#--------- nano gsea_script.sh
+
+!/bin/bash
+# GSEA script
+softwareDir="/Applications/gsea_3.0"
+echo "softwareDir = $softwareDir"
+projectDir="/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO"
+echo "projectDir = $projectDir"
+inDir="$projectDir/LPS_24hr_RNAseq/edgeR/TET2wt_LPSvsSal_glmQLF_RUVg"
+echo "outDir = $inDir"
+outDir="$projectDir/LPS_24hr_RNAseq/edgeR/TET2wt_LPSvsSal_glmQLF_RUVg"
+echo "outDir = $outDir"
+gmtFile="$inDir/Mouse_GOBP_AllPathways_no_GO_iea_November_01_2017_symbol.gmt"
+echo "gmtFile = $gmtFile"
+rankFile="$inDir/rank_df.rnk"
+echo "rankFile = $rankFile"
+rptLabel="PDvsCTRL"
+echo "rptLabel = $rptLabel"
+
+
+if [ ! -f $outDir/$rptLabel.txt ];
+then
+echo "Running GSEA"
+echo "java -cp $softwareDir/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked \
+-gmx $gmtFile \
+-nperm 1000 \
+-scoring_scheme weighted \
+-rnk $rankFile \
+-gui false \
+-out $outDir \
+-rpt_label $rptLabel \
+-set_min 10 \
+-set_max 500 \
+-rnd_seed timestamp -plot_top_x 20 \
+-zip_report false \
+-make_sets true \
+-create_svgs false \
+-collapse false > $outDir/$rptLabel.txt"
+
+java -cp $softwareDir/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked \
+-gmx $gmtFile \
+-nperm 1000 \
+-scoring_scheme weighted \
+-norm meandiv \
+-rnk $rankFile \
+-gui false \
+-out $outDir \
+-rpt_label $rptLabel \
+-set_min 10 \
+-set_max 500 \
+-rnd_seed timestamp -plot_top_x 20 \
+-zip_report false \
+-make_sets true \
+-create_svgs false \
+-collapse false > $outDir/$rptLabel.txt
+else
+echo "[[ERROR]] FOUND $rptLabel.txt"
+fi
+
+#--------- Run script
+
+chmod 750 gsea_script.sh
+./gsea_script.sh
+
+
+#------------------------------------------------------------ GSEA NES
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR")
+
+library(readxl)
+
+GSEA_results <- read_excel("GSEA_results.xlsx",sheet=1)
+
+GSEA_anno <- read_excel("GSEA_results.xlsx",sheet=2)
+
+GSEA_NES <- matrix(0, nrow=21, ncol=5)
+GSEA_NES <- as.data.frame(GSEA_NES)
+names(GSEA_NES) <- c("TET2wt_NES","TET2ko_NES","TET2wt_SD","TET2ko_SD","TTEST_PVAL")
+rownames(GSEA_NES) <- colnames(GSEA_anno)
+
+for (i in 1:21) 
+{
+GSEA <- GSEA_anno[,i]
+colnames(GSEA) <- c("anno")
+GSEA <- GSEA_results[GSEA_results$SUID %in% GSEA$anno, c(18,19)]
+colnames(GSEA) <- c("TET2ko","TET2wt")
+GSEA_NES[i,1] <- mean(GSEA$TET2wt)
+GSEA_NES[i,2] <- mean(GSEA$TET2ko)
+GSEA_NES[i,3] <- sd(GSEA$TET2wt)
+GSEA_NES[i,4] <- sd(GSEA$TET2ko)
+GSEA_NES[i,5] <- t.test(GSEA$TET2ko, GSEA$TET2wt, alternative="two.sided", paired=FALSE, var.equal=FALSE)$p.value
+}
+
+library(reshape)
+
+GSEA_NES$pathway <- rownames(GSEA_NES)
+
+GSEA_NES$pathway <- factor(GSEA_NES$pathway, levels= GSEA_NES[order(GSEA_NES$TET2wt_NES,decreasing=TRUE),"pathway"])
+
+GSEA_NESmean <- melt(GSEA_NES[,c(1:2,6)], id="pathway")
+GSEA_NESsd <- melt(GSEA_NES[,c(3:4,6)], id="pathway")
+GSEA_NESmean$sd <- GSEA_NESsd$value
+
+#---------- Barplot
+
+library("ggplot2")
+
+
+ggplot(data=GSEA_NESmean, aes(x=pathway, y=value, fill=variable)) +
+geom_bar(stat="identity", position=position_dodge(), width=0.75) +
+geom_errorbar(aes(ymin=value-sd, ymax=value+sd), width=.2, position=position_dodge(0.75)) +
+scale_y_continuous(expand=c(0,0), limits=c(-2.8,2.8), breaks=round(seq(-2.8,2.8,0.4),2)) +
+labs(x="GSEA",y="NES") +
+scale_fill_manual(values=c("purple4","orange1")) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=16,family="Helvetica"),
+axis.title.y=element_text(size=18,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=16,family="Helvetica",angle=45,hjust = 1),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+axis.text=element_text(size=18),
+legend.position="none",legend.title=element_blank(),legend.text=element_text(size=16))
+
+
+#------------------------------------------------------------ EdgeR RUVg WT vs KO
+ 
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR")
+ 
+#---------- Design
+
+design <- model.matrix(~ 0 + GROUP + RUVg, data=covar)
+colnames(design)[1:4] <- c("TET2ko_LPS","TET2ko_sal","TET2wt_LPS","TET2wt_sal")
+
+#---------- Estimate Dispersion
+
+y <- estimateDisp(y, design)
+
+#---------- Quasi-likelihood Fit
+
+fit <- glmQLFit(y, design)
+
+#--------- Contrast
+
+contrast <- makeContrasts(TET2kosal_vs_wtsal=TET2ko_sal-TET2wt_sal, levels=design)
+ 
+#--------- Quasi-likelihood FTest
+
+TET2kosal_vs_wtsal_RUVg <- glmQLFTest(fit, contrast=contrast[,"TET2kosal_vs_wtsal"])
+TET2kosal_vs_wtsal_RUVg <- topTags(TET2kosal_vs_wtsal_RUVg, n=Inf, adjust.method="BH", sort="none")$table
+ 
+#---------- Change Names to Entrez
+
+TET2kosal_vs_wtsal_RUVg$symbol <- mapIds(org.Mm.eg.db, keys=row.names(TET2kosal_vs_wtsal_RUVg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+TET2kosal_vs_wtsal_RUVg$entrez <- mapIds(org.Mm.eg.db, keys=row.names(TET2kosal_vs_wtsal_RUVg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+ 
+write.csv(TET2kosal_vs_wtsal_RUVg, file="TET2kosal_vs_wtsal_glmQLF_RUVg_contrast.csv")
+ 
+#---------- GSEA
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR/TET2kosal_vs_wtsal")
+ 
+ 
+#--------- Expression (.txt)
+
+exp_df <- data.frame(NAME=TET2kosal_vs_wtsal_RUVg$symbol, DESCRIPTION=TET2kosal_vs_wtsal_RUVg$symbol, stringsAsFactors=FALSE)
+exp_df <- data.frame(exp_df,RUVg_logcpm)
+exp_df <- exp_df[!is.na(exp_df$NAME),]
+exp_df <- exp_df[!duplicated(exp_df$NAME),]
+write.table(exp_df, file="expression.txt", sep="\t", row=F, quote=F)
+
+#--------- Rank list file (.rnk)
+
+rank_df <- sign(TET2kosal_vs_wtsal_RUVg$logFC) * (-1) * log10(TET2kosal_vs_wtsal_RUVg$PValue)
+rank_df <- sapply(rank_df,function(x) replace(x,is.infinite(x),sign(x) * ((max(rank_df[rank_df !=Inf])) + runif(1))))
+rank_df <- data.frame(gene=TET2kosal_vs_wtsal_RUVg$symbol, rank=rank_df, stringsAsFactors=FALSE)
+rank_df <- rank_df[!is.na(rank_df$gene),]
+rank_df <- rank_df[order(rank_df[,2], decreasing=TRUE),]
+rank_df <- rank_df[!duplicated(rank_df$gene),]
+write.table(rank_df,file="rank_df.rnk",quote=FALSE,sep="\t",row.names=FALSE)
+ 
+#--------- Class file (.cls)
+
+cls_df <- rbind(paste(ncol(RUVg_logcpm),"1","2"),paste("#CTRL","PD"),paste(covar$GROUP,collapse=" "))
+write.table(cls_df,file="class.cls",quote=FALSE,sep=" ",row.names=FALSE)
+ 
+ 
+ 
+ 
+#-------------------------------------------------- GSEA unix script
+
+cd /Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO/LPS_24hr_RNAseq/edgeR/TET2kosal_vs_wtsal_RUVg
+
+
+#--------- Check software
+
+java -cp /Applications/gsea_3.0/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked -help
+
+#--------- nano gsea_script.sh
+
+!/bin/bash
+# GSEA script
+softwareDir="/Applications/gsea_3.0"
+echo "softwareDir = $softwareDir"
+projectDir="/Volumes/projects_secondary/labrie/lee_marshall/PD_mouse_TET2KO"
+echo "projectDir = $projectDir"
+inDir="$projectDir/LPS_24hr_RNAseq/edgeR/TET2kosal_vs_wtsal_RUVg"
+echo "outDir = $inDir"
+outDir="$projectDir/LPS_24hr_RNAseq/edgeR/TET2kosal_vs_wtsal_RUVg"
+echo "outDir = $outDir"
+gmtFile="$inDir/Mouse_GOBP_AllPathways_no_GO_iea_November_01_2017_symbol.gmt"
+echo "gmtFile = $gmtFile"
+rankFile="$inDir/rank_df.rnk"
+echo "rankFile = $rankFile"
+rptLabel="PDvsCTRL"
+echo "rptLabel = $rptLabel"
+
+
+if [ ! -f $outDir/$rptLabel.txt ];
+then
+echo "Running GSEA"
+echo "java -cp $softwareDir/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked \
+-gmx $gmtFile \
+-nperm 1000 \
+-scoring_scheme weighted \
+-rnk $rankFile \
+-gui false \
+-out $outDir \
+-rpt_label $rptLabel \
+-set_min 10 \
+-set_max 500 \
+-rnd_seed timestamp -plot_top_x 20 \
+-zip_report false \
+-make_sets true \
+-create_svgs false \
+-collapse false > $outDir/$rptLabel.txt"
+
+java -cp $softwareDir/gsea-3.0.jar -Xmx1G xtools.gsea.GseaPreranked \
+-gmx $gmtFile \
+-nperm 1000 \
+-scoring_scheme weighted \
+-norm meandiv \
+-rnk $rankFile \
+-gui false \
+-out $outDir \
+-rpt_label $rptLabel \
+-set_min 10 \
+-set_max 500 \
+-rnd_seed timestamp -plot_top_x 20 \
+-zip_report false \
+-make_sets true \
+-create_svgs false \
+-collapse false > $outDir/$rptLabel.txt
+else
+echo "[[ERROR]] FOUND $rptLabel.txt"
+fi
+
+#--------- Run script
+
+chmod 750 gsea_script.sh
+./gsea_script.sh
+
+
+
+
+
+
+
+
+
+
+
