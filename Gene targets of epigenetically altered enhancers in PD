@@ -1,0 +1,663 @@
+#------------------------------ Gene targets of epigenetically altered enhancers in PD
+
+#------------------------------ HOMER & GREAT
+
+library(readr)
+myDifference <- read_csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU.csv")
+write.table(myDifferencel[,1:3],"Methylkit_PDvsCTRL_age_sex_pmi_propGLU.bed", row.names=FALSE, col.names=FALSE, quote=FALSE, sep="\t")
+
+#-------- Convert to bed
+
+sort -k1,1V -k2n PFC_GOTHIC40k_bon_0.05_FR_gene_annotation.txt | awk -v OFS='\t' '{print $1,$2,$3,$7}' | sed '/NULL/d' | sed '1d' > PFC_GOTHIC_40k_0.05bon_genes_sort.bed
+sort -k1,1V -k2n PFC_HOMER_40k_FR_gene_annotation.txt | awk -v OFS='\t' '{print $1,$2,$3,$7}' | sed '/NULL/d' | sed '1d' > PFC_HOMER_40k_FR_genes_sort.bed
+awk -v OFS='\t' 'NR>1{print $1,$2,$3,$1"_"$2}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU.tsv > Methylkit_PDvsCTRL_age_sex_pmi_propGLU.bed
+
+#-------- Bedtools Intersect HiC Regions
+
+module load bedtools/2.25.0
+bedtools intersect -a Methylkit_PDvsCTRL_age_sex_pmi_propGLU.bed -b ../../PFC_HIC/PFC_HOMER_40k_FR_genes_sort.bed -loj | awk -v OFS='\t' '{print $1,$2,$3,$4,$8}' > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_HOMER.bed
+
+#-------- GREAT
+
+Proximal: 5kb upstream, 1kb downstream, plus Distal: up to 600kb
+for i in `ls *.txt | sed 's/\.txt//'` ; do
+awk 'NR>1 {print}' ${i}.txt | sed 's/[()]//g' | sed 's/\ [-+][0-9]*//g' | sed 's/\,\ /_/' > tester ; 
+join -1 4 -2 1 ${i}.bed tester | awk -v OFS='\t' '{print $2,$3,$4,$1,$5}' > ${i}_GREAT_600k.bed ;
+awk '{print $5}' ${i}_GREAT_600k.bed | sed 's/_/\n/g' | sort -u > ${i}_GREAT_600k_genes.bed ;
+done 
+
+#-------- Merge HOMER & GREAT genes
+
+for i in `ls *_HOMER_40k_genes.bed | sed 's/_HOMER_40k_genes.bed//'` ; 
+do cat ${i}_HOMER_40k_genes.bed ${i}_GREAT_600k_genes.bed | sort -u > ${i}_HOMER_40k_GREAT_600k_genes.bed ; done
+
+#-------- Metacore
+
+Homer_Great <- read.csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT_HOMER_melt.csv")
+Homer_Great_FDR <- subset(Homer_Great,qvalue <= 0.05)
+write.csv(Homer_Great_FDR,"Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HomerGreat.csv",row.names=FALSE)
+Homer_Great_FDR_genes <- unique(Homer_Great_FDR$value)
+write.table(Homer_Great_FDR_genes, file = "Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HomerGreat_genes.tsv", append=F, quote=F, sep = "\t", row=F, col=F)
+PDEnh_Methylkit_FDR
+background = right click export as list
+tools -> set threshold and background
+tools -> workflows -> enrichment analysis workflows
+
+#-------- Homer + GREAT DMC Boxplot
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC")
+library(readr)
+library(readxl)
+Methylkit_diseases <- read_excel("PD_Enh_Methylkit_DMC_FDR_HOMER_GREAT_genelist_metacore.xls")
+Methylkit_diseases$Order <- 10:1
+
+library(ggplot2)
+ggplot(data=Methylkit_diseases, aes(x=reorder(Disease,Order), y=-log10(pValue))) +
+geom_bar(stat="identity",fill="chartreuse4") +
+coord_flip() +
+labs(x="",y="-log10(P Value)",title="Disease") +
+geom_hline(yintercept=-log10(6.904e-3), linetype="dashed", color = "red", size=1) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=16,family="Helvetica"),
+axis.title.x=element_text(size=14,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica"),
+axis.text.y=element_text(colour="black",size=14,family="Helvetica"))
+
+Methylkit_go <- read_excel("PD_Enh_Methylkit_DMC_FDR_HOMER_GREAT_genelist_metacore.xls")
+Methylkit_go$Order <- 10:1
+
+library(ggplot2)
+ggplot(data=Methylkit_go, aes(x=reorder(GO,Order), y=-log10(pValue))) +
+geom_bar(stat="identity",fill="chartreuse4") +
+coord_flip() +
+labs(x="",y="-log10(P Value)",title="GO Processes") +
+geom_hline(yintercept=-log10(7.096e-4), linetype="dashed", color = "red", size=1) +
+scale_y_continuous(breaks=seq(0,10,2),limits=c(0,10)) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=16,family="Helvetica"),
+axis.title.x=element_text(size=14,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica"),
+
+
+#-------- Merge GENES
+
+library(dplyr)
+library(tidyr)
+GREAT$X5 <- na_if(GREAT$X5,"NONE")
+GREAT <- separate(GREAT, X5, c("GREAT_1", "GREAT_2", "GREAT_3"), fill="right")
+Methylkit_GREAT <- merge(Methylkit,GREAT,by.x=c("seqnames","start","end"), by.y=c("X1","X2","X3"))
+names(Methylkit_GREAT)[9:12] <- c("NAME","GREAT_1","GREAT_2","GREAT_3")
+library(gtools)
+Methylkit_GREAT <- Methylkit_GREAT[order(Methylkit_GREAT$start),]
+Methylkit_GREAT <- Methylkit_GREAT[mixedorder(Methylkit_GREAT$seqnames),]
+write.table(Methylkit_GREAT,file="Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT.tsv",row.names=FALSE,col.names=TRUE,quote=FALSE,sep="\t")
+
+HOMER <- HOMER[,4:5]
+HOMER$X5 <- na_if(HOMER$X5,".")
+names(HOMER) <- c("NAME","HOMER1")
+HOMER <- HOMER[!is.na(HOMER$HOMER1),]
+HOMER_wide <- HOMER %>% group_by(NAME) %>% mutate(rn = paste0("HOMER_",row_number())) %>% spread(rn, HOMER1)
+cols <- c( 'HOMER_1' , 'HOMER_2' , 'HOMER_3', 'HOMER_4', 'HOMER_5', 'HOMER_6', 'HOMER_7', 'HOMER_8', 'HOMER_9', 'HOMER_10', 'HOMER_11', 'HOMER_12', 'HOMER_13')
+HOMER_wide1 <- unite(HOMER_wide, HOMER1, -NAME, sep=";") 
+HOMER_wide2 <- separate(HOMER_wide1, HOMER1, paste("HOMER",seq(1,81),sep="_"), fill="right")
+HOMER_wide3 <- HOMER_wide2
+HOMER_wide3[, -1][HOMER_wide3[, -1] == "NA"] <- NA
+
+HOMER_long <- gather(HOMER_wide3, key = KEY, value = VALUE, -NAME, na.rm = TRUE)
+HOMER_long1 <- HOMER_long %>% distinct(NAME, VALUE, .keep_all = TRUE)
+HOMER_wide4 <- spread(HOMER_long1, key=KEY, value=VALUE)
+HOMER_wide4 <- HOMER_wide4[,match(names(HOMER_wide3),names(HOMER_wide4))]
+Methylkit_GREAT_HOMER <- merge(Methylkit_GREAT,HOMER_wide4,by.x="NAME", by.y="NAME",all=TRUE)
+
+library(gtools)
+Methylkit_GREAT_HOMER <- Methylkit_GREAT_HOMER[order(Methylkit_GREAT_HOMER$start),]
+Methylkit_GREAT_HOMER <- Methylkit_GREAT_HOMER[mixedorder(Methylkit_GREAT_HOMER$seqnames),]
+Methylkit_GREAT_HOMER1 <- cbind(Methylkit_GREAT_HOMER[,2:9], NAME=Methylkit_GREAT_HOMER[,1], Methylkit_GREAT_HOMER[,10:93])
+write.table(Methylkit_GREAT_HOMER,file="Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT_HOMER.tsv",row.names=FALSE,col.names=TRUE,quote=FALSE,sep="\t")
+
+#-------- Genes of Interest
+
+TET2 = chr4_106164956
+PARK2 = PRKN = chr6_163595037
+DMC_box <- as.data.frame(t(BetaValues_FDR[which(Methylkit_fdr_great$NAME %in% c("chr4_106164956","chr6_163595037")),-1:-6]*100))
+colnames(DMC_box) <- c("TET2","PRKN")
+DMC_box$Sex <- covar$SEX
+DMC_box <- DMC_box[-105,]
+DMC_box$Braak <- rep(c("Braak 0","Braak 3-4","Braak 5-6"),c(48,22,34))
+
+library(ggplot2)
+ggplot(data=DMC_box, aes(x=Braak, y=TET2, fill=Sex)) +
+geom_boxplot(width=0.7,position=position_dodge(width=0.85)) +
+scale_y_continuous(expand = c(0,0), limits = c(10,50),breaks=seq(10,50,5)) +
+labs(y="Methylation (%)") +
+scale_fill_manual(values=c("darkorchid4", "chartreuse4")) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+axis.title.x=element_blank(),
+axis.title.y=element_text(size=18,family="Helvetica",vjust=3),
+axis.text.x=element_text(colour="black",size=18,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+legend.title=element_text(size=18),
+legend.text=element_text(size=18))
+
+library(ggplot2)
+ggplot(data=DMC_box, aes(x=Braak, y=PRKN, fill=Sex)) +
+geom_boxplot(width=0.7,position=position_dodge(width=0.85)) +
+scale_y_continuous(expand = c(0,0), limits = c(20,75),breaks=seq(20,75,10)) +
+labs(y="Methylation (%)") +
+scale_fill_manual(values=c("darkorchid4", "chartreuse4")) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+axis.title.x=element_blank(),
+axis.title.y=element_text(size=18,family="Helvetica",vjust=3),
+axis.text.x=element_text(colour="black",size=18,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+#legend.position="top",
+legend.title=element_text(size=18),
+legend.text=element_text(size=18))
+
+#-------- GVIZ
+
+module load bedtools/2.25.0
+
+#-------- Spilt HiC data
+
+awk -v OFS='\t' 'NR>1{print $1,$2,$3,$4"_"$5"_"$6}' PFC_HOMER_40k_FR_gene_annotation.txt > PFC_HOMER_40k_FR_gene_annotation.bed
+awk -v OFS='\t' 'NR>1{print $4,$5,$6,$1"_"$2"_"$3}' PFC_HOMER_40k_FR_gene_annotation.txt > PFC_HOMER_40k_FR_gene_annotation_interaction.bed
+
+#-------- DMC bedfile
+
+awk -v OFS='\t' 'NR>1{print $1,$2,$3,$1"_"$2}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR.tsv > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR.bed
+
+#-------- Intersect DMCs with HiC regions
+
+bedtools intersect -a Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR.bed -b PFC_HOMER_40k_FR_gene_annotation.bed -wa -wb > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HOMER.bed
+
+#-------- Associated HiC regions with DMC
+
+awk -v OFS='\t' -F'[\t:_]' '{print $9,$10,$11,$4"_"$5}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HOMER.bed | sort -k1,1V -k2n | uniq > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HOMER_associated.bed
+
+#-------- Intersect TSS +/-2kb with HiC associated Region
+
+awk -v OFS='\t' 'NR>1{print $2,$4,$4,$5}' UCSC_TSS.txt | sort -k1,1V -k2n | uniq > UCSC_TSS.bed
+bedtools slop -i UCSC_TSS.bed -g /home/lee.marshall/labrie-primary/Bioinformatics_core/genomes/Human/Ensembl_GRCh37_p13_Unmasked_noscaffolds/Ensembl_GRCh37_p13_Unmasked_noscaffolds.fa.chr.sizes -b 2000 > UCSC_TSS_4kb.bed
+bedtools intersect -a Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HOMER_associated.bed -b UCSC_TSS_4kb.bed -wo > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HOMER_associated_UCSC_TSS_4kb.bed
+
+#-------- DMC and TSS HiC interaction
+
+awk -v OFS='\t' -F'[\t:_]' '{print $4,$5,$5,$4"_"$5}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HOMER_associated_UCSC_TSS_4kb.bed > DMC
+awk -v OFS='\t' '{print $5,$6+2000,$6+2000,$8}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HOMER_associated_UCSC_TSS_4kb.bed > TSS
+paste DMC TSS | awk -v OFS='\t' 'BEGIN{print "DMC_chr","DMC_loc","DMC_loc1","DMC_Name","TSS_chr","TSS_loc","TSS_loc1","TSS_Name","Distance"}{print $0,$6-$2}' > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HOMER_associated_UCSC_TSS_4kb.tsv
+
+#-------- GVIZ
+
+library(ggbio)
+library(GenomicRanges)
+library(knitr)
+library(grid)
+library(Gviz)
+library(GenomicInteractions)
+library(InteractionSet)
+
+#-------- Gene
+
+gene <- cbind("chr6",161280000,163960000,"PRKN","hg19")
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/DLPFC_HiC/Homer_analyze_40kb_chr6")
+library(readr)
+TAD <- read_delim("PFC_HOMER_40k_chr6_HiCseq_guassian_TADs.bed", "\t", escape_double = FALSE, col_names = FALSE, trim_ws = TRUE)
+
+#-------- Gene
+
+gene <- cbind("chr4",104880000,107160000,"TET2","hg19")
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/DLPFC_HiC/PFC_HOMER_40kbres_chr4")
+library(readr)
+TAD <- read_delim("PFC_HOMER_40k_chr4_HiCseq_guassian_TADs.bed", "\t", escape_double = FALSE, col_names = FALSE, trim_ws = TRUE)
+
+#-------- Graph
+
+itrack <- IdeogramTrack(genome = gene[,5], chromosome = gene[,1],
+fontcolor="black",fontface=2,fontsize=12)
+gtrack <- GenomeAxisTrack(genome = gene[,5], chromosome = gene[,1],
+fontcolor="black",fontface=2,fontsize=10,col="black")
+ 
+#-------- labelPos="above"
+
+biotrack <- BiomartGeneRegionTrack(genome = gene[,5], chromosome = gene[,1], 
+start = as.numeric(gene[,2]), end = as.numeric(gene[,3]), name = "Ensemble", 
+transcriptAnnotation = "symbol", filter = list(with_ox_refseq_mrna = TRUE),
+fontcolor.group="black",fontface.group=2,fill="orange2",
+background.title="lightgray",col.title="black")
+plotTracks(list(itrack,gtrack,biotrack))
+
+#-------- Compartments
+
+TADs <- TAD[grep(paste("^",gene[,1],"$",sep=""),TAD$X1),]
+TADs <- AnnotationTrack(genome = gene[,5], chromosome = gene[,1], stacking="dense",
+start = TADs$X2, end = TADs$X3, name = "HiC TADs",
+background.title="lightgray",col.title="black",fontsize=12,rotation.title=0,
+col="transparent",fill="darkorchid4",min.width=0.5)
+plotTracks(list(itrack,gtrack,TADs,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+#-------- Compartments
+
+DMC <- Methylkit_fdr[grep(paste("^",gene[,1],"$",sep=""),Methylkit_fdr$seqnames),]
+DMC <- AnnotationTrack(genome = gene[,5], chromosome = gene[,1], stacking="dense",
+start = DMC$start, end = DMC$end, id = paste(DMC$seqnames,DMC$start,sep="_"), name = "DMCs",
+background.title="lightgray",col.title="black",fontsize=12,rotation.title=0,
+col="transparent",fill="chartreuse4",min.width=2)
+plotTracks(list(itrack,gtrack,TADs,DMC,biotrack),from=as.numeric(gene[,2]),to=as.numeric(gene[,3]))
+
+displayPars(intertrack) = list(col.interactions="deepskyblue",anchor.height=0.05,interaction.dimension="height", 
+plot.trans=TRUE,col.interaction.types=c("BD-BD" ="red"),plot.outside = TRUE, col.trans= "darkgrey", col.outside="lightblue", 
+size=7, fontcolor.title = "black", rotation.title = 0,fontsize = 20, plot.outside = FALSE)
+displayPars(itrack) <- list(size=1, fontcolor="black", fontsize=22, fontfamily = "Helvetica", fontface= "plain", fontface.title="plain")
+displayPars(biomTrack) <- list(size=1, fontsize = 15, fontcolor.group="black", fontsize.group=26, fontcolor.title = "black", rotation.title = 0, fontfamily = "Helvetica", fontface= "plain", fontface.title="plain", fontface.group="plain")
+displayPars(gtrack) <- list(size=2, fontcolor="black", fontsize=22, fontfamily = "Helvetica", fontface= "plain", fontface.title="plain")
+plotTracks(list(itrack,gtrack,intertrack,biotrack), from = as.numeric(gene[,2]), to = as.numeric(gene[,3]), type=c("p"), col=NULL, extend.right=0, extend.left=0)
+
+#-------- DMC Enhancer & TSS Piechart
+
+awk '/tss/' PD_Enh_Probes_Target_intersect.bed > PD_Enh_Probes_Target_intersect_tss.bed
+awk '/enh/' PD_Enh_Probes_Target_intersect.bed > PD_Enh_Probes_Target_intersect_enh.bed
+
+#-------- DMC bed
+
+awk -v OFS='\t' 'NR>1 {print $1,$2,$2+1,$1"_"$2,"0",$5}' Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR.tsv > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR.bed
+module load bedtools/2.25.0
+bedtools intersect -wa -s -u -a ../Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR.bed -b PD_Enh_Probes_Target_intersect_tss.bed > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_tss.bed
+496
+bedtools intersect -wa -s -u -a ../Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR.bed -b PD_Enh_Probes_Target_intersect_enh.bed > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_enh.bed
+1368
+
+#-------- DMC enrichment in UCSC genomic locations hg19
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC")
+library("GenomicRanges")
+Methylkit_back <- GRanges(Methylkit$seqnames,IRanges(Methylkit$start, Methylkit$end))
+Methylkit_fore <- GRanges(Methylkit_FDR$seqnames,IRanges(Methylkit_FDR$start, Methylkit_FDR$end))
+
+#-------- TSS +/-2kb
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/Resources/UCSC_hg19")
+tss <- read.table("tss_FINAL.txt",sep="\t",h=T)
+tss_GR <- GRanges(tss[,2],IRanges(tss[,4]-2000,tss[,4]+2000), name=tss[,5],strand=tss[,3])
+tss_back<- findOverlaps(Methylkit_back,tss_GR, ignore.strand=TRUE)
+tss_back <- data.frame(id=tss_back@from, tss=tss_GR$name[tss_back@to])
+tss_back <- tss_back[!duplicated(tss_back$id),]
+tss_fore<- findOverlaps(Methylkit_fore,tss_GR, ignore.strand=TRUE)
+tss_fore <- data.frame(id=tss_fore@from, tss=tss_GR$name[tss_fore@to])
+tss_fore <- tss_fore[!duplicated(tss_fore$id),]
+phyper(197,1799,904511-1799,94802,lower.tail=FALSE) = 0.2436515
+
+enrichment <- data.frame(rbind(Background=c(904511,94802),Significant=c(1799,197)))
+names(enrichment) <- c("ALL","Enrich")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.044808
+p-value = 0.2904
+
+#-------- Intergenic
+
+intergenic <- read.table("intergenic.bed",sep="\t",h=F)
+intergenic <- data.frame(intergenic, c("intergenic"))
+intergenic_GR <- GRanges(intergenic[,1],IRanges(intergenic[,2],intergenic[,3]), name=intergenic[,5],strand=intergenic[,4])
+intergenic_back<- findOverlaps(Methylkit_back,intergenic_GR, ignore.strand=TRUE)
+intergenic_back <- data.frame(id=intergenic_back@from, name=intergenic_GR$name[intergenic_back@to])
+intergenic_back <- intergenic_back[!duplicated(intergenic_back$id),]
+intergenic_fore<- findOverlaps(Methylkit_fore,intergenic_GR, ignore.strand=TRUE)
+intergenic_fore <- data.frame(id=intergenic_fore@from, name=intergenic_GR$name[intergenic_fore@to])
+intergenic_fore <- intergenic_fore[!duplicated(intergenic_fore$id),]
+phyper(467,1799,904511-1799,240607,lower.tail=FALSE) = 0.721517
+
+enrichment <- data.frame(rbind(Background=c(904511,240607),Significant=c(1799,467)))
+names(enrichment) <- c("ALL","Enrich")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.9758633
+p-value = 0.6886
+
+#-------- CodingExons
+
+CodingExons <- read.table("CodingExons.bed",sep="\t",h=F)
+CodingExons_GR <- GRanges(CodingExons[,1],IRanges(CodingExons[,2],CodingExons[,3]), name=CodingExons[,4],strand=CodingExons[,6])
+CodingExons_back<- findOverlaps(Methylkit_back,CodingExons_GR, ignore.strand=TRUE)
+CodingExons_back <- data.frame(id=CodingExons_back@from, name=CodingExons_GR$name[CodingExons_back@to])
+CodingExons_back <- CodingExons_back[!duplicated(CodingExons_back$id),]
+CodingExons_fore<- findOverlaps(Methylkit_fore,CodingExons_GR, ignore.strand=TRUE)
+CodingExons_fore <- data.frame(id=CodingExons_fore@from, name=CodingExons_GR$name[CodingExons_fore@to])
+CodingExons_fore <- CodingExons_fore[!duplicated(CodingExons_fore$id),]
+phyper(63,1799,904511-1799,37799,lower.tail=FALSE) = 0.9185486
+
+enrichment <- data.frame(rbind(Background=c(904511,37799),Significant=c(1799,63)))
+names(enrichment) <- c("ALL","Enrich")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.8379967
+p-value = 0.9279
+
+#-------- UTRExons5
+
+UTRExons5 <- read.table("UTRExons5.bed",sep="\t",h=F)
+UTRExons5_GR <- GRanges(UTRExons5[,1],IRanges(UTRExons5[,2],UTRExons5[,3]), name=UTRExons5[,4],strand=UTRExons5[,6])
+UTRExons5_back<- findOverlaps(Methylkit_back,UTRExons5_GR, ignore.strand=TRUE)
+UTRExons5_back <- data.frame(id=UTRExons5_back@from, name=UTRExons5_GR$name[UTRExons5_back@to])
+UTRExons5_back <- UTRExons5_back[!duplicated(UTRExons5_back$id),]
+UTRExons5_fore<- findOverlaps(Methylkit_fore,UTRExons5_GR, ignore.strand=TRUE)
+UTRExons5_fore <- data.frame(id=UTRExons5_fore@from, name=UTRExons5_GR$name[UTRExons5_fore@to])
+UTRExons5_fore <- UTRExons5_fore[!duplicated(UTRExons5_fore$id),]
+phyper(48,1799,904511-1799,19617,lower.tail=FALSE) = 0.06603211
+
+enrichment <- data.frame(rbind(Background=c(904511,19617),Significant=c(1799,48)))
+names(enrichment) <- c("ALL","Enrich")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.230242
+p-value = 0.0935
+
+#-------- UTRExons3
+
+UTRExons3 <- read.table("UTRExons3.bed",sep="\t",h=F)
+UTRExons3_GR <- GRanges(UTRExons3[,1],IRanges(UTRExons3[,2],UTRExons3[,3]), name=UTRExons3[,4],strand=UTRExons3[,6])
+UTRExons3_back<- findOverlaps(Methylkit_back,UTRExons3_GR, ignore.strand=TRUE)
+UTRExons3_back <- data.frame(id=UTRExons3_back@from, name=UTRExons3_GR$name[UTRExons3_back@to])
+UTRExons3_back <- UTRExons3_back[!duplicated(UTRExons3_back$id),]
+UTRExons3_fore<- findOverlaps(Methylkit_fore,UTRExons3_GR, ignore.strand=TRUE)
+UTRExons3_fore <- data.frame(id=UTRExons3_fore@from, name=UTRExons3_GR$name[UTRExons3_fore@to])
+UTRExons3_fore <- UTRExons3_fore[!duplicated(UTRExons3_fore$id),]
+phyper(100,1799,904511-1799,44925,lower.tail=FALSE) = 0.1142521
+
+enrichment <- data.frame(rbind(Background=c(904511,44925),Significant=c(1799,100)))
+names(enrichment) <- c("ALL","Enrich")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.119165
+p-value = 0.1491
+
+#-------- splicesite
+
+splicesite <- read.table("splicesite.bed",sep="\t",h=F)
+splicesite <- data.frame(splicesite, c("splicesite"))
+splicesite_GR <- GRanges(splicesite[,1],IRanges(splicesite[,2],splicesite[,3]), name=splicesite[,5],strand=splicesite[,4])
+splicesite_back<- findOverlaps(Methylkit_back,splicesite_GR, ignore.strand=TRUE)
+splicesite_back <- data.frame(id=splicesite_back@from, name=splicesite_GR$name[splicesite_back@to])
+splicesite_back <- splicesite_back[!duplicated(splicesite_back$id),]
+splicesite_fore<- findOverlaps(Methylkit_fore,splicesite_GR, ignore.strand=TRUE)
+splicesite_fore <- data.frame(id=splicesite_fore@from, name=splicesite_GR$name[splicesite_fore@to])
+splicesite_fore <- splicesite_fore[!duplicated(splicesite_fore$id),]
+phyper(34,1799,904511-1799,15477,lower.tail=FALSE) = 0.2443154
+
+enrichment <- data.frame(rbind(Background=c(904511,15477),Significant=c(1799,34)))
+names(enrichment) <- c("ALL","Enrich")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.104522
+p-value = 0.3067
+
+#-------- intron
+
+intron <- read.table("intron.bed",sep="\t",h=F)
+intron_GR <- GRanges(intron[,1],IRanges(intron[,2],intron[,3]), name=intron[,4],strand=intron[,6])
+intron_back<- findOverlaps(Methylkit_back,intron_GR, ignore.strand=TRUE)
+intron_back <- data.frame(id=intron_back@from, name=intron_GR$name[intron_back@to])
+intron_back <- intron_back[!duplicated(intron_back$id),]
+intron_fore<- findOverlaps(Methylkit_fore,intron_GR, ignore.strand=TRUE)
+intron_fore <- data.frame(id=intron_fore@from, name=intron_GR$name[intron_fore@to])
+intron_fore <- intron_fore[!duplicated(intron_fore$id),]
+
+phyper(1207,1799,904511-1799,599658,lower.tail=FALSE) = 0.2299261
+
+enrichment <- data.frame(rbind(Background=c(904511,599658),Significant=c(1799,1207)))
+names(enrichment) <- c("ALL","Enrich")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.012016
+p-value = 0.3809
+
+#-------- Barplot
+
+library(ggplot2)
+odds <- data.frame(region=c("Intergenic","TSS","UTRExons5","CodingExons","Splicesite","Intron","UTRExons3"), odds=c(0.98,1.04,1.23,0.84,1.10,1.01,1.12))
+odds$odd <- odds$odd - 1
+ggplot(data=odds, aes(x=region, y=odd)) +
+geom_bar(stat="identity", width=0.8) +
+scale_y_continuous(expand = c(0,0), limits = c(-0.2,0.3)) +
+labs(x="",y="Odds Ratio") +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),axis.title.x=element_text(size=14,family="Helvetica"),axis.title.y=element_text(size=14,family="Helvetica"),axis.text.x=element_text(colour="black",size=12,family="Helvetica",angle=90,vjust=0.5),axis.text.y=element_text(colour="black",size=12,family="Helvetica"),axis.text=element_text(size=18))
+
+#-------- Annotate Peaks
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC")
+library(GenomicFeatures)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(clusterProfiler)
+library(ReactomePA)
+library(ChIPseeker)
+
+#---------- Granges
+
+library("GenomicRanges")
+Methylkit_back <- GRanges(Methylkit$seqnames, IRanges(Methylkit$start, Methylkit$end), name=rownames(Methylkit), meth.diff=Methylkit$meth.diff)
+Methylkit_fore <- GRanges(Methylkit_fdr$seqnames, IRanges(Methylkit_fdr$start, Methylkit_fdr$end), name=rownames(Methylkit_fdr), meth.diff=Methylkit_fdr$meth.diff)
+txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
+pathway <- enrichPathway(consensus_FDR_peakAnno$geneId)
+head(pathway, 2)
+dotplot(pathway)
+
+gene <- seq2gene(peak, tssRegion = c(-2000, 2000), flankDistance = 3000, TxDb=txdb)
+pathway2 <- enrichPathway(gene)
+head(pathway2, 2)
+dotplot(pathway2)
+
+consensus_peakAnno <- annotatePeak(Methylkit_back, tssRegion=c(-3000, 3000), TxDb=txdb, annoDb="org.Hs.eg.db")
+consensus_FDR_peakAnno <- annotatePeak(Methylkit_fore, tssRegion=c(-3000, 3000), TxDb=txdb, annoDb="org.Hs.eg.db")
+plotAnnoBar(consensus_peakAnno)
+plotAnnoBar(consensus_FDR_peakAnno)
+
+vennpie(consensus_peakAnno)
+vennpie(consensus_FDR_peakAnno)
+plotDistToTSS(consensus_peakAnno, title="Distribution of C's\nrelative to TSS")
+plotDistToTSS(consensus_FDR_peakAnno, title="Distribution of FDR C's\nrelative to TSS")
+
+consensus_Anno <- as.data.frame(consensus_peakAnno)
+consensus_FDR_Anno <- as.data.frame(consensus_FDR_peakAnno)
+
+#-------- Promoter
+
+904511 total C's, of which 1799 DMC's fdr <= 0.05
+sum(grepl("^Promoter", consensus_Anno$annotation))
+sum(grepl("^Promoter", consensus_Anno$annotation) & consensus_Anno$meth.diff >=0)
+sum(grepl("^Promoter", consensus_FDR_Anno$annotation))
+sum(grepl("^Promoter", consensus_FDR_Anno$annotation) & consensus_FDR_Anno$meth.diff >=0)
+113596 Promoter C's, of which 61214 are hypermethylated (54%)
+216 Promoter DMC's fdr <= 0.05, of which 172 are hypermethylated (80%)  
+
+enrichment <- data.frame(rbind(Back=c(904511-113596, 113596), Sig=c(1799-216, 216)))
+names(enrichment) <- c("Other","Region")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.9500304
+p-value = 0.7696
+
+enrichment <- data.frame(rbind(Back=c(113596-61214, 61214),Sig=c(216-172, 172)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 3.344923
+p-value = 2.793e-15
+
+#-------- 5' UTR
+
+904511 total C's, of which 1799 DMC's fdr <= 0.05
+sum(grepl("^5", consensus_Anno$annotation))
+sum(grepl("^5", consensus_Anno$annotation) & consensus_Anno$meth.diff >=0)
+sum(grepl("^5", consensus_FDR_Anno$annotation))
+sum(grepl("^5", consensus_FDR_Anno$annotation) & consensus_FDR_Anno$meth.diff >=0)
+
+2074 5' UTR C's, of which 1198 are hypermethylated (58%)
+8 5' UTR DMC's fdr <= 0.05, of which 8 are hypermethylated (100%)  
+
+enrichment <- data.frame(rbind(Back=c(904511-2074, 2074), Sig=c(1799-8, 8)))
+names(enrichment) <- c("Other","Region")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.94358
+p-value = 0.05903
+
+enrichment <- data.frame(rbind(Back=c(2074-1198, 1198),Sig=c(8-8, 8)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = Inf
+p-value = 0.01255
+
+#-------- Exon
+
+904511 total C's, of which 1799 DMC's fdr <= 0.05
+sum(grepl("^Exon", consensus_Anno$annotation))
+sum(grepl("^Exon", consensus_Anno$annotation) & consensus_Anno$meth.diff >=0)
+sum(grepl("^Exon", consensus_FDR_Anno$annotation))
+sum(grepl("^Exon", consensus_FDR_Anno$annotation) & consensus_FDR_Anno$meth.diff >=0)
+33396 Exon C's, of which 18276 are hypermethylated (58%)
+71 Exon DMC's fdr <= 0.05, of which 30 are hypermethylated (100%)    
+
+enrichment <- data.frame(rbind(Back=c(904511-33396, 33396), Sig=c(1799-71, 71)))
+names(enrichment) <- c("Other","Region")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.071727
+p-value = 0.3003
+
+enrichment <- data.frame(rbind(Back=c(33396-18276, 18276),Sig=c(71-30, 30)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.6053693
+p-value = 0.9869
+
+#-------- Intron
+
+904511 total C's, of which 1799 DMC's fdr <= 0.05
+sum(grepl("^Intron", consensus_Anno$annotation))
+sum(grepl("^Intron", consensus_Anno$annotation) & consensus_Anno$meth.diff >=0)
+sum(grepl("^Intron", consensus_FDR_Anno$annotation))
+sum(grepl("^Intron", consensus_FDR_Anno$annotation) & consensus_FDR_Anno$meth.diff >=0)
+500093 Intron C's, of which 278011 are hypermethylated (58%)
+1007 Intron DMC's fdr <= 0.05, of which 753 are hypermethylated (100%)    
+
+enrichment <- data.frame(rbind(Back=c(904511-500093, 500093), Sig=c(1799-1007, 1007)))
+names(enrichment) <- c("Other","Region")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.028218
+p-value = 0.2874
+
+enrichment <- data.frame(rbind(Back=c(500093-278011, 278011),Sig=c(1007-753, 753)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 2.368117
+p-value < 2.2e-16
+
+#-------- 3' UTR
+
+904511 total C's, of which 1799 DMC's fdr <= 0.05
+sum(grepl("^3", consensus_Anno$annotation))
+sum(grepl("^3", consensus_Anno$annotation) & consensus_Anno$meth.diff >=0)
+sum(grepl("^3", consensus_FDR_Anno$annotation))
+sum(grepl("^3", consensus_FDR_Anno$annotation) & consensus_FDR_Anno$meth.diff >=0)
+33676 3' UTR C's, of which 18028 are hypermethylated (58%)
+69 3' UTR DMC's fdr <= 0.05, of which 54 are hypermethylated (100%)    
+
+enrichment <- data.frame(rbind(Back=c(904511-33676, 33676), Sig=c(1799-69, 69)))
+names(enrichment) <- c("Other","Region")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.031389
+p-value = 0.4178
+
+enrichment <- data.frame(rbind(Back=c(33676-18028, 18028),Sig=c(69-54, 54)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 3.124494
+p-value = 1.868e-05
+
+#-------- Downstream 
+
+904511 total C's, of which 1799 DMC's fdr <= 0.05
+sum(grepl("^Downstream", consensus_Anno$annotation))
+sum(grepl("^Downstream", consensus_Anno$annotation) & consensus_Anno$meth.diff >=0)
+sum(grepl("^Downstream", consensus_FDR_Anno$annotation))
+sum(grepl("^Downstream", consensus_FDR_Anno$annotation) & consensus_FDR_Anno$meth.diff >=0)
+10695 Downstream C's, of which 5831 are hypermethylated (58%)
+28 Downstream DMC's fdr <= 0.05, of which 18 are hypermethylated (100%)    
+
+enrichment <- data.frame(rbind(Back=c(904511-10695, 10695), Sig=c(1799-28, 28)))
+names(enrichment) <- c("Other","Region")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.321314
+p-value = 0.09139
+
+enrichment <- data.frame(rbind(Back=c(10695-5831, 5831),Sig=c(28-18, 18)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.501433
+p-value = 0.1994
+
+#-------- Distal Intergenic
+
+904511 total C's, of which 1799 DMC's fdr <= 0.05
+sum(grepl("^Distal", consensus_Anno$annotation))
+sum(grepl("^Distal", consensus_Anno$annotation) & consensus_Anno$meth.diff >=0)
+sum(grepl("^Distal", consensus_FDR_Anno$annotation))
+sum(grepl("^Distal", consensus_FDR_Anno$annotation) & consensus_FDR_Anno$meth.diff >=0)
+210981 Distal C's, of which 121883 are hypermethylated (58%)
+400 Distal DMC's fdr <= 0.05, of which 302 are hypermethylated (100%)    
+
+enrichment <- data.frame(rbind(Back=c(904511-210981, 210981), Sig=c(1799-400, 400)))
+names(enrichment) <- c("Other","Region")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.9398805
+p-value = 0.8691
+
+enrichment <- data.frame(rbind(Back=c(210981-121883, 121883),Sig=c(400-302, 302)))
+names(enrichment) <- c("Hypomethylation","Hypermethylation")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 2.252682
+p-value = 1.009e-13
+
+Enriched_DMC <- data.frame(Peaks=c("Promoter", "5' UTR", "Exon", "Intron", "3' UTR", "Downstream", "Intergenic"), OddsRatio=c("0.9500304", "1.94358", "1.071727", "1.028218", "1.031389", "1.321314", "0.9398805"))
+Enriched_Hyper <- data.frame(Peaks=c("Promoter", "5' UTR", "Exon", "Intron", "3' UTR", "Downstream", "Intergenic"), OddsRatio=c("3.344923", "7", "0.6053693", "2.368117", "3.124494", "1.501433", "2.252682"))
+
+library("ggplot2")
+ggplot(data=Enriched_Hyper, aes(x=Peaks, y=log(OddsRatio))) +
+geom_bar(stat="identity", position=position_dodge(), width=0.75) +
+coord_flip() +
+scale_x_discrete(limits=rev(Enriched_Hyper$Peaks)) +
+scale_y_continuous(expand = c(0,0), limits = c(-1,2)) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=16,family="Helvetica"),
+axis.title.y=element_text(size=16,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+axis.text=element_text(size=16),
+legend.position="none",legend.title=element_blank(),legend.text=element_text(size=16))
+
+904511 total C's, of which 1799 DMC's fdr <= 0.05
+113596 Promoter C's, of which 61214 are hypermethylated (54%)
+216 Promoter DMC's fdr <= 0.05, of which 172 are hypermethylated (80%)  
+
+enrichment <- data.frame(rbind(Back=c(113596, 904511-113596), Sig=c(216, 1799-216)))
+names(enrichment) <- c("Promoter","Enhancer")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.052598
+p-value = 0.2529
+
+904511 total C's, of which 264022 are CpA's
+1799 DMC's fdr <= 0.05, of which 541 are CpA's
+
+enrichment <- data.frame(rbind(Back=c(904511-264022, 264022), Sig=c(1799-541, 541)))
+names(enrichment) <- c("Other","CpA")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.043252
+p-value = 0.2124
+
+139 GWAS genes of which 63 exist in the enhancer dataset and of these 15 are associated with change
+9957 total genes of which 2885 are associated with changed enhancer
+ 
+enrichment <- data.frame(rbind(Back=c(9957-2885, 2885), Sig=c(63-15, 15)))
+names(enrichment) <- c("Other","GWAS")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.043252
+p-value = 0.2124
