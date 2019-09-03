@@ -755,6 +755,179 @@ plotTracks(list(itrack,gtrack,Csign_track,DMC_track,Probe,Promoter,Enhancer,biot
 
 
 
+#---------------------------------------
+#--------------------------------------- Padlock Alignment 
+#---------------------------------------
+#--------- FASTQC
+mkdir fastqc
+module load fastqc/0.11.5/
+
+qsubs --name fastqc_pretrim --array names --cmd \
+fastqc --outdir factqc --format fastq \
+fastq_merged/SAMPLE_R1_001.fastq.gz fastq_merged/SAMPLE_R2_001.fastq.gz
+
+#--------- TRIMGALORE
+mkdir trimgalore
+module load fastqc/0.11.5/
+module load trimgalore/0.4.4/
+
+qsubs --name trimgalore_7clip --array names --cmd \
+trim_galore fastq_merged/SAMPLE_R1_001.fastq.gz fastq_merged/${SAMPLE}_R2_001.fastq.gz \
+--quality 20 --phred33 --fastqc --illumina --paired --length 50 \
+--clip_R1 7 --output_dir trimgalore
+
+
+#--------- BISMARK ALIGN PROBE MASKED ENSEMBLE_GRCh37
+mkdir Bismark_Ensembl_GRCh37_ProbeMaskedFA
+module load bismark/0.17.0/
+module load bowtie2/2.3.1/
+module load samtools/1.4/
+
+qsubs --name bismark_enh_padlock_align --array names --cores 6 --cmd \
+bismark --multicore 6 --fastq --pbat --unmapped --ambiguous \
+--output_dir Bismark_Ensembl_GRCh37_ProbeMaskedFA --ambig_bam --nucleotide_coverage --bowtie2 -N 0 -p 2 \
+../PD_Padlock_enh/Padlock_Enhancer_Probes/bismark_ProbeMaskedFA_Ensemble_genome \
+-1 trimgalore/SAMPLE_R1_001_val_1.fq.gz -2 trimgalore/SAMPLE_R2_001_val_2.fq.gz
+
+
+2018.07.09
+#--------- BISMARK METHYL EXTRACTOR PROBE MASKED ENSEMBLE_GRCh37
+mkdir Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX
+module load bismark/0.17.0/
+module load bowtie2/2.3.1/
+module load samtools/1.4/
+
+qsubs --name bismark_enh_padlock_methyext --array names --cores 9 --cmd \
+bismark_methylation_extractor --multicore 9 --paired-end --no_overlap \
+--output Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX --gzip --bedGraph --CX --cytosine_report --CX \
+--genome_folder ../PD_Padlock_enh/Padlock_Enhancer_Probes/bismark_ProbeMaskedFA_Ensemble_genome \
+Bismark_Ensembl_GRCh37_ProbeMaskedFA/SAMPLE_R1_001_val_1_bismark_bt2_pe.bam
+
+
+#-------- CXreport - Sort, Filter for 30x Coverage & BetaValues
+
+
+qsubs --name Sort_30xCov --array names --cmd "sort -k1,1V -k2n SAMPLE_CX_report | awk -v OFS='\t' '{if (\$4+\$5 >= 30) print \$1, \$2, \$3, \$6, \$7, \$4/(\$4+\$5) ; else print \$1, \$2, \$3, \$6, \$7, \"NA\"}' > SAMPLE_Sort_30xCov_BetaValues" 
+
+
+#-------- Total Reads
+
+qsubs --name Sort_Reads --array names --cmd "sort -k1,1V -k2n SAMPLE_CX_report | awk -v OFS='\t' '{print \$1, \$2, \$3, \$6, \$7, \$4+\$5}' > SAMPLE_Sort_Reads"
+
+#--------- MERGE BetaValues
+for i in `seq 20` ; do 
+if [ ${i} == 1 ]
+then
+NAME=`head -n ${i} names | tail -n1`
+awk -v OFS='\t' 'BEGIN{print "chr","loc","loc1","type","seq","str","'${NAME}'"} 
+{print $1,$2,$2+1,$4,$5,$3,$6}' ${NAME}_Sort_30xCov_BetaValues > CXreport_Sort_30xCov_BetaValues
+else
+NAME=`head -n ${i} names | tail -n1`
+awk -v OFS='\t' 'BEGIN{print "'${NAME}'"} {print $6}' ${NAME}_Sort_30xCov_BetaValues > test1
+paste CXreport_Sort_30xCov_BetaValues test1 > test2
+mv test2 test1
+mv test1 CXreport_Sort_30xCov_BetaValues
+fi
+done &
+
+
+
+#--------- MERGE Total Reads
+for i in `seq 20` ; do 
+if [ ${i} == 1 ]
+then
+NAME=`head -n ${i} names | tail -n1`
+awk -v OFS='\t' 'BEGIN{print "chr","loc","loc1","type","seq","str","'${NAME}'"} 
+{print $1,$2,$2+1,$4,$5,$3,$6}' ${NAME}_Sort_Reads > CXreport_Sort_Reads
+else
+NAME=`head -n ${i} names | tail -n1`
+awk -v OFS='\t' 'BEGIN{print "'${NAME}'"} {print $6}' ${NAME}_Sort_Reads > test3
+paste CXreport_Sort_Reads test3 > test4
+mv test4 test3
+mv test3 CXreport_Sort_Reads
+fi
+done &
+
+--------------------------------------------- QC Plots
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/edger")
+library(readr)
+BetaValues <- read_delim("CXreport_Sort_30xCov_BetaValues","\t",escape_double=FALSE,trim_ws=TRUE)
+covar <- read_delim("covar","\t",escape_double=FALSE,trim_ws=TRUE)
+
+#------- NA omit
+BetaValues_noNA <- na.omit(BetaValues)
+write.table(BetaValues_noNA,"CXreport_Sort_30xCov_BetaValues_noNA.txt",quote=FALSE,sep ="\t",row.names=FALSE)
+
+#--------------------------- Correlation Number
+
+library(reshape2)
+#------- Pearsons Correlation
+
+correl <- cor(BetaValues_noNA[,7:ncol(BetaValues_noNA)], method ="pearson")
+write.csv(correl,"CXreport_Sort_30xCov_BetaValues_noNA_PearsonCor.csv")
+
+#---------- Average Correlation
+library(reshape2)
+melted_correl <- melt(correl, na.rm = TRUE)
+mean(melted_correl$value,na.rm=FALSE)
+# 0.9742833
+
+#---------- Outliers Below correlation >= 0.9
+aggregate(melted_correl$value, by=list(Category=melted_correl$Var2), FUN=mean)
+
+#---------- R Remove Imprinted genes
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/edger")
+
+library(readr)
+Targets <- read_table2("PD_Enh_Probes_Target_intersect.bed",col_names = FALSE)
+
+Imprited_genes <- Targets[!grepl("^E0|^adult",Targets$X4),]
+
+#---------- Remove Imprinted genes
+
+Targets_rmImprited <- subset(Targets, !(Targets$X4 %in% Imprited_genes$X4))
+
+write.table(Targets_rmImprited,file = 'PD_Enh_Probes_Target_intersect_rmImprited.bed', quote=FALSE, sep='\t', col.names = FALSE, row.names=FALSE)
+
+
+#---------- Bedtools intersect target regions (1bp added to end of target region) 
+
+sed '1d' CXreport_Sort_30xCov_BetaValues > CXreport_Sort_30xCov_BetaValues.bed
+
+
+#---------- Filter C's only in Target Regions
+module load bedtools/2.25.0
+
+bedtools intersect -wa -s -u -a CXreport_Sort_30xCov_BetaValues.bed -b PD_Enh_Probes_Target_intersect_rmImprited.bed > CXreport_Sort_30xCov_BetaValues_Target.bed
+
+head -n1 CXreport_Sort_30xCov_BetaValues > header
+cat header CXreport_Sort_30xCov_BetaValues_Target.bed > CXreport_Sort_30xCov_BetaValues_Target.txt
+
+#---------------------------------------- Removing Outliers
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_auto/appendix/Bismark_Ensembl_GRCh37_ProbeMaskedFA_CX_PFC/CXreports")
+
+rm(list = ls())
+
+library(readr)
+
+BetaValues_Target <- read_delim("CXreport_Sort_30xCov_BetaValues_Target.txt","\t",escape_double=FALSE,trim_ws=TRUE) 
+
+covar <- read_delim("covar","\t",escape_double=FALSE,trim_ws=TRUE)
+
+#--------- Remove Outliers OFB
+
+BetaValues_Outliers <-BetaValues_Target[,-grep("WGA",names(BetaValues_Target))]
+
+covar_Outliers <- covar[-grep("WGA",covar$SAMPLE),]
+
+#--------- Write
+
+write.table(BetaValues_Outliers,file="CXreport_Sort_30xCov_BetaValues_Target_Outliers.tsv", row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+
+write.table(covar_Outliers,file="Covar_Outliers",row.names=FALSE,col.names=TRUE,quote=FALSE,sep="\t")
 
 
 
@@ -762,7 +935,634 @@ plotTracks(list(itrack,gtrack,Csign_track,DMC_track,Probe,Promoter,Enhancer,biot
 
 
 
+#---------------------------------------- Average Replicates
 
+rm(list = ls())
+
+library(readr)
+
+BetaValues_Outliers <- read_delim("CXreport_Sort_30xCov_BetaValues_Target_Outliers.tsv", "\t", escape_double=FALSE, trim_ws=TRUE) 
+
+Covar_Outliers <- read_delim("Covar_Outliers","\t",escape_double=FALSE,trim_ws=TRUE)
+
+
+#---------- Replicates Average
+
+NT4 <- rowMeans(BetaValues_Outliers[,c("NT4","RNT4")],na.rm=TRUE)
+BetaValues_Outliers$NT4 <- NT4
+BetaValues_Outliers <- BetaValues_Outliers[,names(BetaValues_Outliers) != "RNT4"]
+Covar_Outliers <- Covar_Outliers[Covar_Outliers$SAMPLE != "RNT4",]
+
+T4 <- rowMeans(BetaValues_Outliers[,c("T4","RT4")],na.rm=TRUE)
+BetaValues_Outliers$T4 <- T4
+BetaValues_Outliers <- BetaValues_Outliers[,names(BetaValues_Outliers) != "RT4"]
+Covar_Outliers <- Covar_Outliers[Covar_Outliers$SAMPLE != "RT4",]
+
+
+#--------- Write
+
+write.table(BetaValues_Outliers,file="CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg.tsv", row.names=FALSE, col.names=TRUE, quote=FALSE,sep="\t")
+
+write.table(Covar_Outliers, file="Covar_Outliers_RepAvg", row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+
+
+
+
+
+
+#---------------------------------------- Filter Cs
+
+library(readr)
+
+SNPlist <- read_delim("SNPlist_Common_Eur_Afr_phase3.txt"," ", escape_double=FALSE,col_names=FALSE,trim_ws=TRUE)
+
+colnames(SNPlist) <- c("chr","SNP","RS","Common","Varients")
+
+#--------- Filter Cs >= 30% NAs)
+
+BetaValues_Outliers_30na <- BetaValues_Outliers[rowSums(is.na(BetaValues_Outliers[,-1:-6])) <= nrow(Covar_Outliers)*0.3,]
+
+#--------- Filter Cs with all 0% 
+
+BetaValues_Outliers_30na_rm0 <- BetaValues_Outliers_30na[rowSums(BetaValues_Outliers_30na[,-1:-6],na.rm=TRUE) > 0,] 
+
+#--------- Filter Cs for Common SNPs
+
+BetaValues_Outliers_30na_rm0_SNP <- subset(BetaValues_Outliers_30na_rm0, !((paste(BetaValues_Outliers_30na_rm0$chr, BetaValues_Outliers_30na_rm0$loc, sep="_") %in% paste(SNPlist$chr, SNPlist$SNP, sep="_")))) 
+
+#--------- Write
+write.table(BetaValues_Outliers_30na_rm0_SNP, file="CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg_30na_rm0_SNP.tsv", row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+
+BetaValues <- BetaValues_Outliers_30na_rm0_SNP 
+
+
+
+
+
+---------------------------------------- Filter Coverage
+
+TotalReads <- read_delim("CXreport_Sort_Reads","\t",escape_double=FALSE,trim_ws=TRUE) 
+
+#---------- Subset Total 
+
+Reads <- subset(TotalReads[which(paste(TotalReads$chr,TotalReads$loc,sep="_") %in% paste(BetaValues$chr,BetaValues$loc,sep="_")),])
+
+#---------- NA <= 30x Coverage
+
+Reads_30x <- Reads
+Reads_30x[,-1:-6][Reads_30x[,-1:-6] <= 30] <- NA
+
+
+#---------- Replicates Average
+
+NT4 <- rowMeans(Reads_30x[,c("NT4","RNT4")],na.rm=TRUE)
+Reads_30x$NT4 <- NT4
+Reads_30x <- Reads_30x[,names(Reads_30x) != "RNT4"]
+
+T4 <- rowMeans(Reads_30x[,c("T4","RT4")],na.rm=TRUE)
+Reads_30x$T4 <- T4
+Reads_30x <- Reads_30x[,names(Reads_30x) != "RT4"]
+
+
+#--------- Remove Outliers OFB
+
+Reads_30x_Outliers <-Reads_30x[,-grep("WGA",names(Reads_30x))]
+
+#--------- Write
+
+write.table(Reads_30x_Outliers,file="CXreport_Sort_Reads_30xCov_Target_Outliers_RepAvg_30na_rm0_SNP.tsv",row.names=FALSE,col.names=TRUE,quote=FALSE,sep="\t")
+
+#-------------------------------------------------- Methylkit
+
+
+rm(list=ls())
+
+
+
+---------- Input Files
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/edger")
+
+library(readr)
+covar <- read_delim("covar_outliers.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+
+BetaValues <- 
+read_delim("CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg_30na_rm0_SNP.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+
+Reads <- read_delim("CXreport_Sort_Reads_30xCov_Target_Outliers_RepAvg_30na_rm0_SNP.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+
+
+#---------- Create CXreports
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/edger/methylkit/30xCov_Target_Outliers_RepAvg_30na_rm0_SNP")
+
+for (i in 1:16) 
+{
+x <- covar$SAMPLE[i]
+
+CXreport <-cbind(chrBase=paste(BetaValues$chr,BetaValues$loc,sep="."), chr=BetaValues$chr, base=BetaValues$loc, strand=BetaValues$str, coverage=round(Reads[,x],digits=0), freqC=round(BetaValues[,x]*100,digits=2), freqT=round(100-(BetaValues[,x]*100),digits=2))
+
+names(CXreport)[5:7] <- c("coverage","freqC","freqT")
+CXreport[is.na(CXreport)] <- 0
+
+write.table(CXreport, paste(x,"Sort_30xCov_Target_Outliers_RepAvg_30na_rm0_SNP",sep="_"), row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+next
+}
+
+
+
+#---------------------------------------- CpG and CpH PDvsCTRL
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/edger")
+
+library(readr)
+covar <- read_delim("covar_outliers.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/edger/methylkit/30xCov_Target_Outliers_RepAvg_30na_rm0_SNP")
+
+#---------- methylKit
+
+library(methylKit)
+library(gtools)
+
+
+files <- as.data.frame(list.files(path = ".", pattern = "^.*SNP$", all.files = FALSE,full.names = FALSE, recursive = FALSE,ignore.case = FALSE, include.dirs = FALSE, no.. = FALSE))
+
+names(files) <- "CXreports"
+files$SAMPLE <- gsub("_.*$","",files$CXreports)
+files <- files[order(match(files$SAMPLE,covar$SAMPLE)),]
+fileslist <- as.list(as.character(files[,1]))
+
+Group <- as.numeric(as.character(factor(covar$siRNA,labels=c(0,1))))
+
+methyl <- methRead(location=fileslist,sample.id=as.list(covar$SAMPLE), assembly="hg19", treatment=Group, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+
+#---------- DMC
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/methylkit")
+
+# destrand=TRUE for only CpG
+methylu <- unite(methyl,destrand=FALSE,min.per.group=1L,mc.cores=6)
+
+methylunite <- as.data.frame(as(methylu,"GRanges")) 
+methylunite <- methylunite[order(methylunite$start),]
+methylunite <- methylunite[mixedorder(methylunite$seqnames),]
+write.csv(methylunite,"Methylkit_SHSY5Y_TET2siRNAvsNT.csv",row.names=FALSE)
+
+
+
+#---------- Differential 
+
+
+
+myDiff <- calculateDiffMeth(methylu,covariates=NULL,overdispersion="MN",adjust="fdr",test="Chisq",mc.cores=6)
+
+myDifference <- as.data.frame(as(myDiff,"GRanges")) 
+myDifference$seqnames <- as.character(myDifference$seqnames)
+myDifference <- myDifference[order(myDifference$start),]
+myDifference <- myDifference[mixedorder(myDifference$seqnames),]
+
+myDifference$seq <- BetaValues$seq
+myDifference$type <- BetaValues$type
+write.csv(myDifference,"Methylkit_SHSY5Y_TET2siRNAvsNT_DMCs.csv",row.names=FALSE)
+
+myDifference_pval <- myDifference[myDifference$pvalue <= 0.05,]
+write.csv(myDifference_pval,"Methylkit_SHSY5Y_TET2siRNAvsNT_DMCs_0.05pval.csv",row.names=FALSE)
+
+myDifference_FDR <- myDifference[myDifference$qvalue <= 0.05,]
+write.csv(myDifference_FDR,"Methylkit_SHSY5Y_TET2siRNAvsNT_DMCs_0.05FDR.csv",row.names=FALSE)
+
+
+------------------------------------------------------------ Enrichment
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/edger/methylkit")
+
+
+#---------- PD Enhancer DMCs
+
+PDEnh <- read_delim("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU.tsv", "\t", escape_double = FALSE, trim_ws = TRUE)
+PDEnh$start <- PDEnh$start - 1
+PDEnh$Names <- paste(PDEnh$seqnames, PDEnh$end, sep="_")
+PDEnh_PVAL <- PDEnh[PDEnh$pvalue <= 0.05,]
+PDEnh_PVAL_1diff <- PDEnh_PVAL[abs(PDEnh_PVAL$meth.diff) >= 1,]
+PDEnh_FDR <- PDEnh[PDEnh$qvalue <= 0.05,]
+PDEnh_FDR_1diff <- PDEnh_FDR[abs(PDEnh_FDR$meth.diff) >= 1,]
+
+904511 PDEnh of which 504430 have increased methylation 55.8%
+96323 PDEnh_PVAL 10.6% of which 61752 have increased methylation 64.1%
+46035 PDEnh_PVAL_1diff 5.1% of which 31491 have increased methylation 68.4%
+1799 PDEnh_FDR 0.2% of which 1337 have increased methylation 74.3%
+1085 PDEnh_FDR_1diff 0.1% of which 756 have increased methylation 69.7%
+
+phyper(1337, 504430, 904511-504430, 1799, lower.tail=FALSE) 2.859937e-60
+phyper(756, 504430, 904511-504430, 1085, lower.tail=FALSE) 2.056595e-21
+
+
+#---------- TET2siRNA DMCs
+
+TET2siRNA <- myDifference
+TET2siRNA$Names <- paste(TET2siRNA$seqnames, TET2siRNA$start, sep="_")
+TET2siRNA_PVAL <- TET2siRNA[TET2siRNA$pvalue <= 0.05,]
+TET2siRNA_PVAL_1diff <- TET2siRNA_PVAL[abs(TET2siRNA_PVAL$meth.diff) >= 1,]
+TET2siRNA_FDR <- TET2siRNA[TET2siRNA$qvalue <= 0.05,]
+TET2siRNA_FDR_1diff <- TET2siRNA_FDR[abs(TET2siRNA_FDR$meth.diff) >= 1,]
+
+1031160 TET2siRNA of which 508724 have increased methylation 49.3%
+90005 TET2siRNA_PVAL 8.7% of which 35016 have increased methylation 38.9%
+25918 TET2siRNA_PVAL_1diff 2.5% of which 10135 have increased methylation 39.1%
+636 TET2siRNA_FDR 0.06% of which 301 have increased methylation 47.3%
+467 TET2siRNA_FDR_1diff 0.045% of which 279 have increased methylation 59.7% 
+
+phyper(10135, 508724, 1031160-508724, 25918, lower.tail=TRUE) 1.978666e-246
+
+write.table(TET2siRNA_PVAL_1diff, file = "Methylkit_SHSY5Y_TET2siRNAvsNT_DMCs_0.05pval_1diff.csv", append=F, quote=F, sep = ",", row=F, col=T)
+
+#---------- TET2siRNA DMCs enriched in PD Enhancer DMCs
+
+sum(TET2siRNA_PVAL$Names %in% PDEnh$Names) 73852
+sum(TET2siRNA_PVAL$Names %in% PDEnh_PVAL$Names) 7886
+phyper(7886, 96323, 904511-96323, 73852, lower.tail=FALSE) 0.3922417
+
+sum(TET2siRNA_PVAL_1diff$Names %in% PDEnh$Names) 19511
+sum(TET2siRNA_PVAL_1diff$Names %in% PDEnh_PVAL_1diff$Names) 1868
+phyper(1868, 46035, 904511-46035, 19511, lower.tail=FALSE) 2.154909e-148
+
+sum(TET2siRNA_FDR$Names %in% PDEnh$Names) 496
+sum(TET2siRNA_FDR$Names %in% PDEnh_FDR$Names) 1
+phyper(1, 1799, 904511-1799, 496, lower.tail=FALSE) 0.2592698
+
+sum(TET2siRNA_FDR_1diff$Names %in% PDEnh$Names) 333
+sum(TET2siRNA_FDR_1diff$Names %in% PDEnh_FDR_1diff$Names) 1
+phyper(1, 1085, 904511-1085, 333, lower.tail=FALSE) 0.06127764
+
+
+
+#---------- PD Enhancer DMCs enriched in TET2siRNA DMCs
+
+sum(PDEnh_PVAL$Names %in% TET2siRNA$Names) 91833
+sum(PDEnh_PVAL$Names %in% TET2siRNA_PVAL$Names) 7886
+phyper(7886, 90005, 1031160-90005, 91833, lower.tail=FALSE) 0.9434325
+
+sum(PDEnh_PVAL_1diff$Names %in% TET2siRNA$Names) 43735
+sum(PDEnh_PVAL_1diff$Names %in% TET2siRNA_PVAL_1diff$Names) 1868
+phyper(1868, 25918, 1031160-25918, 43735, lower.tail=FALSE) 2.593117e-107
+
+sum(PDEnh_FDR$Names %in% TET2siRNA$Names) 1720
+sum(PDEnh_FDR$Names %in% TET2siRNA_FDR$Names) 1
+phyper(1, 636, 1031160-636, 1720, lower.tail=FALSE) 0.2866434
+
+sum(PDEnh_FDR_1diff$Names %in% TET2siRNA$Names) 1034
+sum(PDEnh_FDR_1diff$Names %in% TET2siRNA_FDR_1diff$Names) 1
+phyper(1, 467, 1031160-467, 1034, lower.tail=FALSE) 0.08063008
+
+
+
+#---------------------------------------- TET2siRNA DMCs enriched in PD Enhancer DMCs
+
+
+1031160 TET2siRNA of which 508724 have increased methylation 49.3%
+25918 TET2siRNA_PVAL_1diff 2.5% of which 10135 have increased methylation 39.1%
+phyper(10135, 508724, 1031160-508724, 25918, lower.tail=TRUE) 1.978666e-246
+
+enrichment <- data.frame(rbind(Background=c(522436, 508724),Significant=c(15783, 10135)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="less")
+odds ratio = 0.6594586 
+p-value < 2.2e-16
+
+#---------- Barplot
+
+library("ggplot2")
+
+percentage <- data.frame(rbind(background=c(50.7,49.3),significant=c(60.9,39.1)))
+names(percentage) <- c("Hypo-methylation","Hyper-methylation")
+percentage$Context <- rownames(percentage)
+percentage <- melt(percentage, id="Context")
+
+ggplot(data=percentage, aes(x=variable, y=value, fill=Context)) +
+geom_bar(stat="identity", position=position_dodge(), width=0.75) +
+scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+labs(x="",y="DNA Modification %") +
+scale_fill_manual(values=c("brown", "dodgerblue3")) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=16,family="Helvetica"),
+axis.title.y=element_text(size=18,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=16,family="Helvetica",angle=0,vjust=0),
+axis.text.y=element_text(colour="black",size=12,family="Helvetica"),
+axis.text=element_text(size=18),
+legend.position="none",legend.title=element_blank(),legend.text=element_text(size=16))
+
+
+
+
+
+
+
+904511 PDEnh of which 504430 have increased methylation 55.8%
+46035 PDEnh_PVAL_1diff 5.1% of which 31491 have increased methylation 68.4%
+
+sum(TET2siRNA_PVAL_1diff$Names %in% PDEnh$Names) 19511
+sum(TET2siRNA_PVAL_1diff$Names %in% PDEnh_PVAL_1diff$Names) 1868
+phyper(1868, 46035, 904511-46035, 19511, lower.tail=FALSE) 2.154909e-148
+
+enrichment <- data.frame(rbind(PDEnh=c(858476,46035),TET2siRNA_PVAL_1diff=c(17643,1868)))
+names(enrichment) <- c("Background","Significant")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.974449 
+p-value < 2.2e-16
+
+
+
+
+
+TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff <- TET2siRNA_PVAL_1diff[TET2siRNA_PVAL_1diff$Names %in% PDEnh_PVAL_1diff$Names,]
+PDEnh_PVAL_1diff_inter_TET2siRNA_PVAL_1diff <- PDEnh_PVAL_1diff[PDEnh_PVAL_1diff$Names %in% TET2siRNA_PVAL_1diff$Names,]
+TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff$PDEnhmeth.diff <- PDEnh_PVAL_1diff_inter_TET2siRNA_PVAL_1diff$meth.diff
+
+1031160 TET2siRNA of which 508724 have increased methylation 49.3%
+1868 TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff  
+482 hyper in PDEnh & hyper TET2 
+623 hyper in PDEnh & hypo TET2
+405 hypo in PDEnh & hypo TET2
+358 hypo in PDEnh & hyper TET2
+
+enrichment <- data.frame(rbind(Background=c(522436, 508724),Significant=c(1028, 840)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="less")
+odds ratio = 0.8391461 
+p-value = 8.758e-05
+
+enrichment <- data.frame(rbind(Background=c(522436, 508724),Significant=c(623, 482)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="less")
+odds ratio = 0.794531 
+p-value = 8.052e-05
+
+enrichment <- data.frame(rbind(Background=c(522436, 508724),Significant=c(405, 358)))
+names(enrichment) <- c("Hypo-methylation","Hyper-methylation")
+fisher.test(enrichment, alternative="less")
+odds ratio = 0.9077891 
+p-value = 0.09718
+
+#-------------------------------------------------- shinyCircos & Circa
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/methylkit")
+
+
+#----------- PDEnh_PVAL_1diff
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/methylkit/shinyCircos")
+
+PDEnh_PVAL_1diff_bed <- cbind(PDEnh_PVAL_1diff[,1:3])
+PDEnh_PVAL_1diff_bed$value <- sign(PDEnh_PVAL_1diff$meth.diff) * (-1) * log10(PDEnh_PVAL_1diff$pvalue)
+PDEnh_PVAL_1diff_bed$seqnames <- gsub("chr","",PDEnh_PVAL_1diff_bed$seqnames)
+#PDEnh_PVAL_1diff_bed <- rbind(c(1,1,2,15),c(1,1,2,-15),PDEnh_PVAL_1diff_bed)
+PDEnh_PVAL_1diff_bed$value <- round(PDEnh_PVAL_1diff_bed$value, digits = 2)
+
+PDEnh_PVAL_1diff_bed_hyper <- PDEnh_PVAL_1diff_bed[PDEnh_PVAL_1diff_bed$value > 0,]
+PDEnh_PVAL_1diff_bed_hypo <- PDEnh_PVAL_1diff_bed[PDEnh_PVAL_1diff_bed$value < 0,]
+
+write.table(PDEnh_PVAL_1diff_bed_hyper, file="PDEnh_PVAL_1diff_bed_hyper.csv", append=FALSE, quote=FALSE, sep=",", row.names=FALSE, col.names=TRUE)
+write.table(PDEnh_PVAL_1diff_bed_hypo, file="PDEnh_PVAL_1diff_bed_hypo.csv", append=FALSE, quote=FALSE, sep=",", row.names=FALSE, col.names=TRUE)
+
+#----------- TET2siRNA_PVAL_1diff
+
+TET2siRNA_PVAL_1diff_bed <- cbind(TET2siRNA_PVAL_1diff[,1:3])
+TET2siRNA_PVAL_1diff_bed$value <- sign(TET2siRNA_PVAL_1diff$meth.diff) * (-1) * log10(TET2siRNA_PVAL_1diff$pvalue)
+TET2siRNA_PVAL_1diff_bed$seqnames <- gsub("chr","",TET2siRNA_PVAL_1diff_bed$seqnames)
+#TET2siRNA_PVAL_1diff_bed <- rbind(c(1,1,2,25),c(1,3,4,-25),TET2siRNA_PVAL_1diff_bed)
+TET2siRNA_PVAL_1diff_bed$value <- round(TET2siRNA_PVAL_1diff_bed$value, digits = 2)
+
+TET2siRNA_PVAL_1diff_bed_hyper <- TET2siRNA_PVAL_1diff_bed[TET2siRNA_PVAL_1diff_bed$value > 0,]
+TET2siRNA_PVAL_1diff_bed_hypo <- TET2siRNA_PVAL_1diff_bed[TET2siRNA_PVAL_1diff_bed$value < 0,]
+
+write.table(TET2siRNA_PVAL_1diff_bed_hyper, file="TET2siRNA_PVAL_1diff_bed_hyper.csv", append=FALSE, quote=FALSE, sep=",", row.names=FALSE, col.names=TRUE)
+write.table(TET2siRNA_PVAL_1diff_bed_hypo, file="TET2siRNA_PVAL_1diff_bed_hypo.csv", append=FALSE, quote=FALSE, sep=",", row.names=FALSE, col.names=TRUE)
+
+
+
+
+#-------------------------------------------------- Heatmap
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/CXreports")
+
+library(readr)
+library(gtools)
+library(pheatmap)
+library(RColorBrewer)
+library(viridis)
+library(dendsort)
+library(vegan)
+library(gplots)
+library(squash)
+
+
+#---------- Input Files
+
+PDEnh_covar <- read_delim("Covar_Outliers_RepAvg_Prop.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+PDEnh_BetaValues <- 
+read_delim("CXreport_Sort_30xCov_BetaValues_Target_Outliers_RepAvg_30na_rm0_SNP.tsv","\t",escape_double=FALSE,trim_ws=TRUE)
+
+
+#---------- Intersect
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/methylkit")
+
+TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff <- TET2siRNA_PVAL_1diff[TET2siRNA_PVAL_1diff$Names %in% PDEnh_PVAL_1diff$Names,]
+PDEnh_PVAL_1diff_inter_TET2siRNA_PVAL_1diff <- PDEnh_PVAL_1diff[PDEnh_PVAL_1diff$Names %in% TET2siRNA_PVAL_1diff$Names,]
+TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff$PDEnhmeth.diff <- PDEnh_PVAL_1diff_inter_TET2siRNA_PVAL_1diff$meth.diff
+
+ggplot(data=TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff, aes(x=meth.diff, y=PDEnhmeth.diff)) + 
+geom_point(size=0.1, colour="grey")
+
+
+#---------- Zscore BetaValues 
+
+TET2siRNA_PVAL_1diff_inter_beta <- BetaValues[paste(BetaValues$chr,BetaValues$loc,sep="_") %in% TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff$Names,-1:-6]
+rownames(TET2siRNA_PVAL_1diff_inter_beta) <- TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff$Names
+
+PDEnh_PVAL_1diff_inter_beta <- PDEnh_BetaValues[paste(PDEnh_BetaValues$chr,PDEnh_BetaValues$loc,sep="_") %in% PDEnh_PVAL_1diff_inter_TET2siRNA_PVAL_1diff$Names,-1:-6]
+rownames(PDEnh_PVAL_1diff_inter_beta) <- PDEnh_PVAL_1diff_inter_TET2siRNA_PVAL_1diff$Names
+colnames(PDEnh_PVAL_1diff_inter_beta) <- paste(PDEnh_covar$Group,PDEnh_covar$SAMPLE,sep="_")
+
+cal_z_score <- function(x){
+(x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+}
+
+TET2siRNA_PVAL_1diff_inter_beta_zscore <- t(apply(TET2siRNA_PVAL_1diff_inter_beta, 1, cal_z_score))
+PDEnh_PVAL_1diff_inter_beta_zscore <- t(apply(PDEnh_PVAL_1diff_inter_beta, 1, cal_z_score))
+
+TET2siRNA_PVAL_1diff_inter_beta_zscore[is.na(TET2siRNA_PVAL_1diff_inter_beta_zscore)] <- 0
+PDEnh_PVAL_1diff_inter_beta_zscore[is.na(PDEnh_PVAL_1diff_inter_beta_zscore)] <- 0
+
+
+#-------------------------------------------------- Pheatmap
+ 
+mycol <- colorRampPalette(c("blue1","blue1","blue1","black","red1","red1","red1"))(100)
+ann <- data.frame(Braak=PDEnh_covar$PD_Braak_Stage)
+rownames(ann) <- colnames(PDEnh_PVAL_1diff_inter_beta)
+anncol <- list(Braak=c("white","red1","red2","red3","red4"))
+
+pheatmap(mat=PDEnh_PVAL_1diff_inter_beta_zscore, color=mycol, annotation_col=ann, annotation_colors=anncol, cutree_rows=2, cluster_cols=FALSE, clustering_distance_rows="correlation",show_rownames=FALSE)
+
+mycol1 <- colorRampPalette(c("blue4","black","red4"))(100)
+ann1 <- data.frame(TET2=as.numeric(as.factor(covar$siRNA)))
+rownames(ann1) <- colnames(TET2siRNA_PVAL_1diff_inter_beta)
+anncol1 <- list(TET2=c("chartreuse3","red4"))
+
+pheatmap(mat=TET2siRNA_PVAL_1diff_inter_beta_zscore, color=mycol1, annotation_col=ann1, annotation_colors=anncol1, cutree_rows=2, cluster_cols=FALSE, clustering_distance_rows="correlation",show_rownames=FALSE)
+
+
+data <-  data.frame(PDEnh_PVAL_1diff_inter_beta_zscore, TET2siRNA_PVAL_1diff_inter_beta_zscore, PDEnh=PDEnh_PVAL_1diff_inter_TET2siRNA_PVAL_1diff$meth.diff, TET2siRNA=TET2siRNA_PVAL_1diff_inter_PDEnh_PVAL_1diff$meth.diff)
+
+data <- data[order(data$PDEnh + data$TET2siRNA, decreasing=TRUE),]
+
+data_pospos <- data[data$PDEnh > 0 & data$TET2siRNA > 0,]
+data_posneg <- data[data$PDEnh > 0 & data$TET2siRNA < 0,]
+data_negpos <- data[data$PDEnh < 0 & data$TET2siRNA > 0,]
+data_negneg <- data[data$PDEnh < 0 & data$TET2siRNA < 0,]
+
+data <- rbind(data_pospos,data_posneg,data_negpos,data_negneg)
+data <- data[,-122:-123]
+
+mycol <- colorRampPalette(c("blue1","blue1","blue1","blue1","blue1","black","red1","red1","red1","red1","red1"))(100)
+pheatmap(mat=data, color=mycol, cluster_cols=FALSE, cluster_rows=FALSE, show_rownames=FALSE)
+
+#---------- Average Controls zscore
+
+data_pdenh <- data[,1:105]
+
+avg_score <- function(x){
+(x - mean(x[1:48], na.rm=TRUE))
+}
+
+data_pdenh <- t(apply(data_pdenh, 1, avg_score))
+
+mycol <- colorRampPalette(c("blue1","blue3","black","red3","red1"))(50)
+pheatmap(mat=data_pdenh, color=mycol, cluster_cols=FALSE, cluster_rows=FALSE, show_rownames=FALSE)
+
+data_tet2 <- data[,106:121]
+
+avg_score <- function(x){
+(x - mean(x[1:8], na.rm=TRUE))
+}
+
+data_tet2 <- t(apply(data_tet2, 1, avg_score))
+mycol <- colorRampPalette(c("blue1","blue1","blue4","black","red4","red1","red1"))(100)
+pheatmap(mat=data_tet2, color=mycol, cluster_cols=FALSE, cluster_rows=FALSE, show_rownames=FALSE)
+
+#---------------------------------------------- GREAT & HOMER Pathways
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC")
+
+
+#---------- Input Data
+
+GREAT_HOMER <-read_csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_GREAT_HOMER_melt.csv")
+
+
+#-------- Associated Genes
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/methylkit")
+
+GREAT_HOMER_back <- unique(GREAT_HOMER$value)
+GREAT_HOMER_pospos <- unique(GREAT_HOMER[GREAT_HOMER$NAME %in% rownames(data_posneg),"value"])
+
+write.table(GREAT_HOMER_back,"Methylkit_SHSY5Y_TET2siRNAvsNT_Great_Homer_genes.tsv", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+
+write.table(GREAT_HOMER_pospos,"Methylkit_SHSY5Y_TET2siRNAvsNT_hypo_PVAL_1diff_intersect_PDEnh_hyper_PVAL_1diff_Great_Homer_genes.tsv", sep="\t", row.names=FALSE, col.names=FALSE, quote=FALSE)
+
+
+#---------- Metacore 
+
+https://portal.genego.com
+vanandel1
+!nf0rm@ticS
+
+Methylkit_SHSY5Y_TET2siRNAvsNT_Great_Homer_genes.tsv = TET2siRNAvsNT_background
+Methylkit_SHSY5Y_TET2siRNAvsNT_hypo_PVAL_1diff_intersect_PDEnh_hyper_PVAL_1diff_Great_Homer_genes.tsv = TET2siRNAvsNT_hypo_PVAL_1diff_intersect_PDEnh_hyper_PVAL_1diff
+
+background = right click export as list
+tools -> set threshold and background
+tools -> workflows -> enrichment analysis workflows
+
+
+TET2siRNAvsNT_1diff_PD_Enh_hyper_PVAL_1diff_genelist
+
+
+
+
+
+------------------------------------------ Homer + GREAT DMC Boxplot
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/Methylkit/DMC")
+
+#---------- Input Data
+
+library(readr)
+
+networks <- read.delim("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/methylkit/TET2siRNAvsNT_hypo_PVAL_1diff_intersect_PDEnh_hyper_PVAL_1diff_metacore_networks.tsv")
+
+networks$Order <- 10:1
+
+library(ggplot2)
+ggplot(data=networks, aes(x=reorder(Networks,Order), y=-log10(p.value))) +
+geom_bar(stat="identity",fill="chartreuse4") +
+coord_flip() +
+labs(x="",y="-log10(P Value)",title="Networks") +
+geom_hline(yintercept=-log10(0.0025), linetype="dashed", color = "red", size=1) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=16,family="Helvetica"),
+axis.title.x=element_text(size=14,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica"),
+axis.text.y=element_text(colour="black",size=14,family="Helvetica"))
+
+processes <- read.delim("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/methylkit/TET2siRNAvsNT_hypo_PVAL_1diff_intersect_PDEnh_hyper_PVAL_1diff_metacore_processes.tsv")
+
+processes$Order <- 10:1
+
+library(ggplot2)
+ggplot(data=processes, aes(x=reorder(Processes,Order), y=-log10(p.value))) +
+geom_bar(stat="identity",fill="chartreuse4") +
+coord_flip() +
+labs(x="",y="-log10(P Value)",title="Processes") +
+geom_hline(yintercept=-log10(5.379e-05), linetype="dashed", color = "red", size=1) +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=16,family="Helvetica"),
+axis.title.x=element_text(size=14,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica"),
+axis.text.y=element_text(colour="black",size=14,family="Helvetica"))
+
+
+#-------------------------------------------------- TET2 qpcr box plot 
+
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/SHSY5Y_TET2KD/methylkit")
+
+
+TET2qpcr <- data.frame(GROUP=rep(c("NT","KD"),each=6),FoldChange=c(-0.43,0.44,-0.01,0.09,0.01,-0.10,-1.85,-1.40,-1.66,-1.00,-1.10,-1.42))
+
+
+library(ggplot2)
+ggplot(data=TET2qpcr, aes(x=GROUP, y=FoldChange, color=GROUP)) +
+geom_boxplot() + 
+scale_x_discrete(limits=c("NT","KD")) +
+geom_jitter(shape=16, position=position_jitter(0.15), size=3) +
+scale_color_manual(values=c("darkorange3", "grey50")) +
+scale_y_continuous(expand = c(0,0), limits = c(-2,0.5)) +
+labs(x="",y="TET2 (fold change)") +
+theme_classic() + 
+theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+plot.title=element_text(hjust = 0.5,size=12,face="bold.italic",family="Helvetica"),
+axis.title.x=element_text(size=14,family="Helvetica"),
+axis.title.y=element_text(size=14,family="Helvetica"),
+axis.text.x=element_text(colour="black",size=12,family="Helvetica"),
+axis.text.y=element_text(colour="black",size=10,family="Helvetica"),
+axis.text=element_text(size=18),
+legend.position="none")
 
 
 
