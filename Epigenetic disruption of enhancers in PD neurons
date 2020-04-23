@@ -1699,6 +1699,174 @@ fisher.test(enrichment, alternative="greater")
 odds ratio = 1.043252
 p-value = 0.2124
 
+
+
+
+#------------------------------ Differentially Methylated Regions
+
+#---------- Avg Methyl Tilesation across tiles
+
+tiles=tileMethylCounts(methyl,win.size=1000,step.size=50,cov.bases=1,mc.cores=6)
+tilesu=unite(tiles,destrand=FALSE,min.per.group=1L,mc.cores=6)
+design <- as.data.frame(model.matrix(~Group+AGE+SEX+PMI+proportions_GLU, data=covar))
+covariates=design[,3:6]
+
+#---------- Differentially Methylated Tiles
+
+tilesDiff=calculateDiffMeth(tilesu,covariates=covariates,overdispersion="MN",adjust="fdr",test="Chisq",mc.cores=6)
+tilesDifference <- as.data.frame(as(tilesDiff,"GRanges")) 
+tilesDifference$seqnames <- as.character(tilesDifference$seqnames)
+tilesDifference <- tilesDifference[order(tilesDifference$start),]
+tilesDifference <- tilesDifference[mixedorder(tilesDifference$seqnames),]
+write.csv(tilesDifference,"Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles.csv",row.names=FALSE)
+tilesDifference_pval <- tilesDifference[tilesDifference$pvalue <= 0.05,]
+write.csv(myDifference_pval,"Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05pval.csv",row.names=FALSE)
+tilesDifference_FDR <- tilesDifference[tilesDifference$qvalue <= 0.05,]
+write.csv(tilesDifference_FDR,"Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR.csv",row.names=FALSE)
+
+#---------- Filter
+
+tilesDifference_FDR_hyper <- tilesDifference_FDR[tilesDifference_FDR$meth.diff >0, ] 
+tilesDifference_FDR_hypo <- tilesDifference_FDR[tilesDifference_FDR$meth.diff <0, ] 
+write.table(tilesDifference_FDR_hyper[,1:3], "Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR_hyper.bed", row.names=FALSE,col.names=FALSE,quote=FALSE, sep="\t")
+write.table(tilesDifference_hyper[,1:3], "Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_hyper.bed", row.names=FALSE, col.names=FALSE,quote=FALSE, sep="\t")
+write.table(tilesDifference_FDR_hypo[,1:3], "Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR_hypo.bed", row.names=FALSE,col.names=FALSE,quote=FALSE, sep="\t")
+write.table(tilesDifference_hypo[,1:3], "Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_hypo.bed", row.names=FALSE, col.names=FALSE,quote=FALSE, sep="\t")
+
+#---------- Bedtools merge tiles
+
+module load bedtools/2.25.0
+for i in `cat names` ; do bedtools merge -i ${i}.bed > ${i}_merged.bed ; done
+for i in `ls *merged.bed` ; do awk -v OFS='\t' '{print $1,$2,$3,$1"_"$2}' ${i} > tester ; mv tester ${i} ; done
+cat *tiles_0.05FDR* | sort -k1,1V -k2n > Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR_merged.bed
+
+#-------------------- Enrichment of Hypermethylated Regions
+
+library(BEDR)
+old_path <- Sys.getenv("PATH")
+Sys.setenv(PATH = paste(old_path,"/Users/lee.marshall/miniconda2/bin",sep=":"))
+library(bedr)
+bedr.merge.region(paste(paste(tilesDifference_FDR_hypo$seqnames,tilesDifference_FDR_hypo$start,sep=":"),tilesDifference_FDR_hypo$end,sep="-"),distance = 0)
+
+#14814 Total Merged Tiles
+#13867 hyper
+#11236 hypo
+#1139 Merged Tiles <= 0.05 fdr
+#846 Hyper
+#292 Hypo
+
+options(scipen = 1)
+phyper(846,13867,11236,1139,lower.tail=FALSE) # pvalue = 1.798422e-42
+ 
+enrichment <- data.frame(rbind(Background=c(11236, 13867),Significant=c(292, 846)))
+names(enrichment) <- c("Hypomethylated","Hypermethylated")
+fisher.test(enrichment, alternative="greater")
+fisher.test(enrichment, alternative="greater")$p.value
+odds ratio = 2.347415 
+p-value = 5.186344e-39
+ 
+#-------------------- Summarise FDR results from merged data
+ 
+library(readr)
+PDvsCTRL_tiles_FDR <- read_csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR.csv")
+hypo_merged <- read_delim("Hypo_Hyper/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR_hypo_merged.bed", "\t", escape_double=FALSE, col_names=FALSE, trim_ws=TRUE)
+hyper_merged <- read_delim("Hypo_Hyper/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR_hyper_merged.bed", "\t", escape_double=FALSE, col_names=FALSE, trim_ws=TRUE)
+names(hypo_merged) <- c("seqnames","start","end","name")
+names(hyper_merged) <- c("seqnames","start","end","name")
+ 
+hyper_merged$pvalue <- 0
+hyper_merged$qvalue <- 0
+hyper_merged$meth.diff <- 0
+ 
+for (i in 1:nrow(hyper_merged))
+{
+tmp <- PDvsCTRL_tiles_FDR[PDvsCTRL_tiles_FDR$seqnames == hyper_merged[i,]$seqnames & PDvsCTRL_tiles_FDR$start >= hyper_merged[i,]$start & PDvsCTRL_tiles_FDR$end <= hyper_merged[i,]$end,]
+hyper_merged[i,]$pvalue <- mean(tmp$pvalue)
+hyper_merged[i,]$qvalue <- mean(tmp$qvalue)
+hyper_merged[i,]$meth.diff <- mean(tmp$meth.diff)
+}
+ 
+hypo_merged$pvalue <- 0
+hypo_merged$qvalue <- 0
+hypo_merged$meth.diff <- 0
+ 
+for (i in 1:nrow(hypo_merged))
+{
+tmp <- PDvsCTRL_tiles_FDR[PDvsCTRL_tiles_FDR$seqnames == hypo_merged[i,]$seqnames & PDvsCTRL_tiles_FDR$start >= hypo_merged[i,]$start & PDvsCTRL_tiles_FDR$end <= hypo_merged[i,]$end,]
+hypo_merged[i,]$pvalue <- mean(tmp$pvalue)
+hypo_merged[i,]$qvalue <- mean(tmp$qvalue)
+hypo_merged[i,]$meth.diff <- mean(tmp$meth.diff)
+}
+ 
+merged <- rbind(hyper_merged, hypo_merged)
+merged <- merged[order(merged$start),]
+merged <- merged[mixedorder(merged$seqnames),]
+write.csv(merged,"Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR_merged.csv",row.names=FALSE)
+ 
+#-------------------- Enhancer intersect with DMRs
+ 
+PD_Probes <- read_delim("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Padlock_Enhancer_Probes/PD_Enh_Probes_merged.bed", "\t", escape_double = FALSE, col_names = FALSE, trim_ws = TRUE)
+PD_Probes$Name <- paste("Enhancer",seq(1:31590),sep="_")
+PD_Probes_GR <- GRanges(seqnames=PD_Probes$X1, IRanges(start=PD_Probes$X2 , end=PD_Probes$X3), Name=PD_Probes$Name)
+merged_GR <- GRanges(seqnames=merged$seqnames, IRanges(start=merged$start , end=merged$end), Tile=merged$name)
+PD_Probes$DMR <- countOverlaps(PD_Probes_GR, merged_GR)
+ 
+#---------- Enriched DMR and DMC genes 
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/DMC")
+DMC_genes <- read_csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_HomerGreat_genes.tsv", col_names=FALSE)
+DMC_FDR_genes <- read_csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HomerGreat_genes.tsv", col_names=FALSE)
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/Tiles_1000t_50s")
+DMR_genes <- read_csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_merged_HOMER_40k_GREAT_600k_genes.bed", col_names=FALSE)
+DMR_FDR_genes <- read_csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU_tiles_0.05FDR_merged_HOMER_40k_GREAT_600k_genes.bed", col_names=FALSE)
+ 
+9957 DMC_genes
+2885 DMC_FDR_genes
+10131 DMR_genes
+2143 DMR_FDR_genes
+
+9850 length(intersect(DMC_genes$X1, DMR_genes$X1))
+2101 length(intersect(DMC_genes$X1, DMR_FDR_genes$X1))
+1220 length(intersect(DMC_FDR_genes$X1, DMR_FDR_genes$X1))
+ 
+enrichment <- data.frame(rbind(DMC=c(9957-2885, 2885), DMRenrichment=c(2101, 1220)))
+names(enrichment) <- c("Background","Significant")
+fisher.test(enrichment, alternative="greater")
+fisher.test(enrichment, alternative="greater")$p.value
+odds ratio = 1.423418 
+p-value < 2.2e-16
+ 
+library(VennDiagram)
+grid.newpage()
+draw.pairwise.venn(2885, 2143, 1220, category = c("DMC genes", "DMR genes"), lty = rep("blank",2), fill = c("red", "orange"), alpha = rep(0.5, 2), cat.pos = c(0,0), cat.dist = rep(0.025, 2))
+ 
+#---------- Enriched DMR and DMC sites 
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/Tiles_1000t_50s")
+Methylkit_FDR <- read_delim("DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR.tsv", "\t", escape_double = FALSE, trim_ws = TRUE)
+Methylkit_FDR$names <- paste(Methylkit_FDR$seqnames,Methylkit_FDR$start,sep="_")
+Methylkit_FDR_GR <- GRanges(seqnames=Methylkit_FDR$seqnames, IRanges(start=Methylkit_FDR$start , end=Methylkit_FDR$end), Name=Methylkit_FDR$names)
+merged_GR <- GRanges(seqnames=merged$seqnames, IRanges(start=merged$start , end=merged$end), Tile=merged$name)
+merged$DMC <- countOverlaps(merged_GR, Methylkit_FDR_GR)
+ 
+Methylkit <- read_delim("../DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU.tsv", "\t", escape_double = FALSE, trim_ws = TRUE)
+Methylkit$names <- paste(Methylkit$seqnames,Methylkit$start,sep="_")
+Methylkit_GR <- GRanges(seqnames=Methylkit$seqnames, IRanges(start=Methylkit$start , end=Methylkit$end), Name=Methylkit$names)
+merged_GR <- GRanges(seqnames=merged$seqnames, IRanges(start=merged$start , end=merged$end), Tile=merged$name)
+merged$C <- countOverlaps(merged_GR, Methylkit_GR)
+ 
+Cs 904511
+DMCs 1799
+Cs inside DMRs 56954
+DMCs inside DMRs 464
+ 
+enrichment <- data.frame(rbind(C=c(904511-1799, 1799), DMRenrichment=c(56954-464, 464)))
+names(enrichment) <- c("Background","Significant")
+fisher.test(enrichment, alternative="greater")
+fisher.test(enrichment, alternative="greater")$p.value
+odds ratio = 4.121771 
+p-value = 2.266489e-121
+
 #------------------------------ PD MODELS
 
 rm(list=ls(all=TRUE))
