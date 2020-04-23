@@ -1,7 +1,5 @@
 #------------------------------ Epigenetic disruption of enhancers in PD neurons
 
-#------------------------------ Preprocessing
-
 #---------- Filtering reads
 
 sort -k1,1V -k2n SAMPLE_CXreport | awk -v OFS='\t' '{if (\$4+\$5 >= 30) print \$1, \$2, \$3, \$6, \$7, \$4/(\$4+\$5) ; else print \$1, \$2, \$3, \$6, \$7, \"NA\"}' > SAMPLE_Sort_30xCov_BetaValues 
@@ -39,7 +37,7 @@ mv test3 CXreport_Sort_Reads
 fi
 done &
 
-#------------------------------ QC Plots
+#------- QC Plots
 
 setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/CXreports")
 library(readr)
@@ -175,7 +173,7 @@ colored_bars(colors=bars,dend=dend,rowLabels=c("PMI","Age","Group","Sex"),cex.ro
 dev.copy(png,"CXreport_Sort_30xCov_BetaValues_noNA_dendrogram.png",width=1000,height=1000,res=200)
 dev.off()
 
-#------------------------------ Preprocessing
+#------- Preprocessing
 
 setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/CXreports")
 library(readr)
@@ -504,7 +502,7 @@ blank_theme + theme(axis.text.x=element_blank())
 plot + geom_text(aes(y=c(100-6.15,100-56.15),label=percent(value/100)),size=4)
 ggsave("PD_Padlock_Enh_CG_CH_piechart.png",width=6,height=6,units="cm") 
 
-#------------------------------ Neuronal Subtypes
+#-------- Neuronal Subtypes
 
 setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/CXreports")
 library(readr)
@@ -616,7 +614,7 @@ legend.title=element_blank(),
 legend.text=element_text(size=12)) +
 scale_x_discrete(name="",labels=c("F" = "Female", "M" = "Male"))
 
-#------------------------------ Methylkit
+#-------- Methylkit
 
 setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD_Padlock_enh/Torronto_CXreports/CXreports")
 library(readr)
@@ -702,7 +700,7 @@ p-value < 2.2e-16
 require("VennDiagram")
 length(which(paste(myDifference_pval$seqnames,myDifference_pval$start,sep="_") %in% paste(MValues_rlmFit_pval$chr,MValues_rlmFit_pval$loc,sep="_")))
 
-#------------------------------ HOMER & GREAT
+#--------- HOMER & GREAT
 
 library(readr)
 myDifference <- read_csv("Methylkit_PDvsCTRL_age_sex_pmi_propGLU.csv")
