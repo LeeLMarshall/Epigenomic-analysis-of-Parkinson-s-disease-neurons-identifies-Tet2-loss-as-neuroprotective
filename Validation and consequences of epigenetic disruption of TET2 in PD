@@ -1218,34 +1218,860 @@ legend.position="none")
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #------------------------------ PD induced dopaminergic neurons 
+
+#-------- GSE125239
+ 
+module load sratoolkit/2.8.2-1
+qsubs --name sratoolkit_prefetch --array Run_accession --test --cmd "prefetch -X 20G SAMPLE"
+qsubs --name sratoolkit_fastqdump --array Run_accession --test --cmd "fastq-dump --split-files ~/labrie-secondary/ncbi/sra/SAMPLE.sra --outdir fastq"
+while read line ; do mv $(awk '{print $1"_1.fastq",$2"_R1.fastq"}' <<<$line) ; done < ../names
+while read line ; do mv $(awk '{print $1"_2.fastq",$2"_R2.fastq"}' <<<$line) ; done < ../names
+qsubs --names gzip_fastqc --array names --cmd "gzip fastq/SAMPLE_R1.fastq"
+qsubs --names gzip_fastqc --array names --cmd "gzip fastq/SAMPLE_R2.fastq"
+ 
+#---------- FastQC
+
+module load fastqc/0.11.5
+qsubs --names fastqc_pretrim --array names --cmd "fastqc --outdir fastqc fastq/SAMPLE_R1.fastq.gz"
+qsubs --names fastqc_pretrim --array names --cmd "fastqc --outdir fastqc fastq/SAMPLE_R2.fastq.gz"
+ 
+#---------- Trimgalore
+
+module load trimgalore/0.4.4
+qsubs --names trimgalore_fastqc --array names --cmd "trim_galore --fastqc --length 50 --output_dir trimgalore --paired fastq/SAMPLE_R1.fastq.gz fastq/SAMPLE_R2.fastq.gz"
+ 
+#--------- STAR INDEX
+ 
+module load star/2.5.3a
+STAR --help
+qsubs --names star_index --cores 20 --cmd "STAR --runThreadN 20 --runMode genomeGenerate --genomeDir star_index_150bp --genomeFastaFiles Ensembl_GRCh37_p13_Unmasked_noscaffolds.fa --sjdbGTFfile gencode_v19_annotation.gtf --sjdbOverhang 150"
+ 
+#---------- STAR
+
+module load star/2.5.3a
+qsubs --names star_transcriptome --cores 6 --array names --cmd "STAR --runMode alignReads --runThreadN 6 \
+--genomeDir /home/lee.marshall/labrie-primary/Bioinformatics_core/transcriptomes/Human/Ensembl_GRCh37_Gencode_v19/star_index_150bp \
+--genomeLoad NoSharedMemory --readFilesIn trimgalore/SAMPLE_R1_val_1.fq.gz trimgalore/SAMPLE_R2_val_2.fq.gz \
+--readFilesCommand zcat --outFileNamePrefix star/SAMPLE --outReadsUnmapped None --outSAMtype BAM SortedByCoordinate \
+--outFilterMismatchNoverLmax 0.1 --quantMode GeneCounts"
+ 
+#---------- Multiqc
+
+qsubs --names multiqc_posttrim --cmd "multiqc ." 
+ 
+#---------- STAR gene counts Stranded counts
+ 
+for i in `cat names`; do awk -v OFS='\t' 'FNR>4{print $1,$4}' star/${i}ReadsPerGene.out.tab | sed -e 's/\..*\t/\t/' > edgeR/genecounts/${i} ; done
+ 
+#---------- EdgeR
+
+rm(list=ls(all=TRUE))
+if (!requireNamespace("BiocManager", quietly = TRUE)) + install.packages("BiocManager")
+BiocManager::install("dendextend", version = "3.8")
+ 
+library(edgeR)
+library(readr)
+library(ggfortify)
+library(dendextend)
+library(reshape2)
+library(ExpressionNormalizationWorkflow)
+library(sva)
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+library(RColorBrewer)
+library(RUVSeq)
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_GEO_models/GSE125239_PDvsCTRL_human_fibroblasts_iDANs/edgeR")
+covar <- read_delim("covar.csv",",",escape_double=FALSE,trim_ws=TRUE)
+rownames(covar) <- covar$SAMPLE
+ 
+#---------- Counts
+ 
+counts <- readDGE(covar$SAMPLE,path="genecounts",columns=c(1,2),header=FALSE)
+counts <- counts$counts
+ 
+#---------- DGEList 
+ 
+y <- DGEList(counts, group=covar$GROUP)
+ 
+#---------- Filtering
+ 
+y <- y[rowSums(cpm(y)>1) >= ncol(counts), , keep.lib.sizes=FALSE]
+dim(y) #[1] 9686  36
+ 
+#---------- TMM Normalization
+ 
+y <- calcNormFactors(y,method="TMM")
+ 
+#---------- CPM
+ 
+cpm <- cpm(y,normalized.lib.sizes=TRUE, log=FALSE)
+write.csv(cpm,file="cpm.csv")
+logcpm <- cpm(y,normalized.lib.sizes=TRUE, log=TRUE)
+write.csv(logcpm, file="logcpm.csv")
+ 
+#------- Pearsons Correlation
+ 
+correl <- cor(logcpm, method ="pearson")
+correl <- melt(correl, na.rm = TRUE)
+mean(correl$value,na.rm=FALSE)
+# 0.9003221
+ 
+#---------- Outliers Below correlation >= 0.9
+ 
+aggregate(correl$value, by=list(Category=correl$Var2), FUN=mean)
+ 
+#---------- PCA Plots
+ 
+library(RColorBrewer)
+colors <- brewer.pal(4, "Set2")
+plotPCA(logcpm, k=2, labels=TRUE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], cex=1)
+plotPCA(logcpm, k=2, labels=FALSE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], pch=c(15,16)[as.factor(covar$DISEASE)], plot3d=TRUE)
+ 
+#---------- ExpressionNormalizationWorkflow
+ 
+expSet <- expSetobj(logcpm,covar)
+ 
+#---------- PVCA
+ 
+pvcAnaly(expSet, 0.75, c("DISEASE","CELLTYPE"))
+ 
+#---------- Design
+ 
+design <- model.matrix(~ 0 + GROUP, data=covar)
+colnames(design)[1:4] <- c("CTRL_fibroblasts", "CTRL_iDANs", "PD_fibroblasts","PD_iDANs")
+ 
+#---------- Estimate Dispersion
+ 
+y <- estimateDisp(y, design)
+
+#---------- Quasi-likelihood Fit
+ 
+fit <- glmQLFit(y, design)
+
+#---------- Contrast
+ 
+iDANs <- makeContrasts(PD_iDANs-CTRL_iDANs, levels=design)
+fibroblasts <- makeContrasts(PD_fibroblasts-CTRL_fibroblasts, levels=design)
+ 
+#--------- Quasi-likelihood FTest
+ 
+PDvsCTRL_iDANs <- glmQLFTest(fit, contrast=iDANs)
+PDvsCTRL_iDANs <- topTags(PDvsCTRL_iDANs, n=Inf, adjust.method="BH", sort="none")$table
+PDvsCTRL_fibroblasts <- glmQLFTest(fit, contrast=fibroblasts)
+PDvsCTRL_fibroblasts <- topTags(PDvsCTRL_fibroblasts, n=Inf, adjust.method="BH", sort="none")$table
+ 
+#---------- Change Names to Entrez
+ 
+columns(org.Hs.eg.db)
+PDvsCTRL_iDANs$SYMBOL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_iDANs), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+PDvsCTRL_iDANs$ENTREZID <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_iDANs), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+PDvsCTRL_fibroblasts$SYMBOL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_fibroblasts), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+PDvsCTRL_fibroblasts$ENTREZID <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_fibroblasts), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+ 
+#---------- combine gene names & cpm counts
+ 
+PDvsCTRL_iDANs <- cbind(PDvsCTRL_iDANs,cpm)
+write.csv(PDvsCTRL_iDANs, file="iDANs_RNAseq_glmQLF_PDvsCTRL_contrast_cpm.csv")
+PDvsCTRL_fibroblasts <- cbind(PDvsCTRL_fibroblasts,cpm)
+write.csv(PDvsCTRL_fibroblasts, file="fibroblasts_RNAseq_glmQLF_PDvsCTRL_contrast_cpm.csv")
+ 
+#---------- Filter FDR <= 0.05
+ 
+PDvsCTRL_iDANs_FDR <- PDvsCTRL_iDANs[PDvsCTRL_iDANs$FDR <= 0.05,]
+write.csv(PDvsCTRL_iDANs_FDR, file="iDANs_RNAseq_glmQLF_PDvsCTRL_contrast_cpm_0.05FDR.csv")
+PDvsCTRL_fibroblasts_FDR <- PDvsCTRL_fibroblasts[PDvsCTRL_fibroblasts$FDR <= 0.05,]
+write.csv(PDvsCTRL_fibroblasts_FDR, file="fibroblasts_RNAseq_glmQLF_PDvsCTRL_contrast_cpm_0.05FDR.csv")
+ 
+#---------- EdgeR RUVseq
+ 
+empirical <- PDvsCTRL_iDANs$PValue >= 0.25 & PDvsCTRL_fibroblasts$PValue >= 0.25 
+ 
+#---------- RUVg
+ 
+logcpm_ruvg <- RUVg(logcpm, empirical, k=1, isLog=TRUE)$normalizedCounts
+covar$RUVg <- round(RUVg(logcpm, empirical, k=1, isLog=TRUE)$W, digits=2)
+ 
+#---------- PCA
+ 
+plotPCA(logcpm_ruvg, k=2, labels=TRUE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], cex=1)
+plotPCA(logcpm_ruvg, k=2, labels=FALSE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], pch=c(15,16)[as.factor(covar$DISEASE)])
+ 
+#---------- Expression Set
+ 
+expSet <- expSetobj(logcpm_ruvg,covar)
+ 
+#---------- PVCA
+ 
+pvcAnaly(expSet, 0.75, c("DISEASE","CELLTYPE"))
+ 
+#---------- Design
+ 
+design1 <- model.matrix(~ 0 + GROUP + RUVg, data=covar)
+colnames(design1)[1:4] <- c("CTRL_fibroblasts", "CTRL_iDANs", "PD_fibroblasts","PD_iDANs")
+ 
+#---------- Estimate Dispersion
+ 
+y1 <- estimateDisp(y, design1)
+ 
+#---------- Quasi-likelihood Fit
+ 
+fit1 <- glmQLFit(y1, design1)
+ 
+#---------- Contrast
+ 
+iDANs <- makeContrasts(PD_iDANs-CTRL_iDANs, levels=design1)
+fibroblasts <- makeContrasts(PD_fibroblasts-CTRL_fibroblasts, levels=design1)
+ 
+#--------- Quasi-likelihood FTest
+ 
+PDvsCTRL_iDANs_RUVg <- glmQLFTest(fit1, contrast=iDANs)
+PDvsCTRL_iDANs_RUVg <- topTags(PDvsCTRL_iDANs_RUVg, n=Inf, adjust.method="BH", sort="none")$table
+PDvsCTRL_fibroblasts_RUVg <- glmQLFTest(fit1, contrast=fibroblasts)
+PDvsCTRL_fibroblasts_RUVg <- topTags(PDvsCTRL_fibroblasts_RUVg, n=Inf, adjust.method="BH", sort="none")$table
+ 
+#---------- Change Names to Entrez
+ 
+PDvsCTRL_iDANs_RUVg$SYMBOL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_iDANs_RUVg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+PDvsCTRL_iDANs_RUVg$ENTREZID <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_iDANs_RUVg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+PDvsCTRL_fibroblasts_RUVg$SYMBOL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_fibroblasts_RUVg), column="SYMBOL", keytype="ENSEMBL", multiVals="first")
+PDvsCTRL_fibroblasts_RUVg$ENTREZID <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_fibroblasts_RUVg), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+ 
+#---------- combine gene names & cpm counts
+ 
+PDvsCTRL_iDANs_RUVg <- cbind(PDvsCTRL_iDANs_RUVg,logcpm_ruvg)
+write.csv(PDvsCTRL_iDANs_RUVg, file="iDANs_RNAseq_glmQLF_PDvsCTRL_RUVg_contrast_logcpmRUVg.csv")
+PDvsCTRL_fibroblasts_RUVg <- cbind(PDvsCTRL_fibroblasts_RUVg,logcpm_ruvg)
+write.csv(PDvsCTRL_fibroblasts_RUVg, file="fibroblasts_RNAseq_glmQLF_PDvsCTRL_RUVg_contrast_logcpmRUVg.csv")
+ 
+#---------- Filter FDR <= 0.05
+ 
+PDvsCTRL_iDANs_RUVg_FDR <- PDvsCTRL_iDANs_RUVg[PDvsCTRL_iDANs_RUVg$FDR <= 0.05,]
+write.csv(PDvsCTRL_iDANs_RUVg_FDR, file="iDANs_RNAseq_glmQLF_PDvsCTRL_RUVg_contrast_logcpmRUVg_0.05FDR.csv")
+PDvsCTRL_fibroblasts_RUVg_FDR <- PDvsCTRL_fibroblasts_RUVg[PDvsCTRL_fibroblasts_RUVg$FDR <= 0.05,]
+write.csv(PDvsCTRL_fibroblasts_RUVg_FDR, file="fibroblasts_RNAseq_glmQLF_PDvsCTRL_RUVg_contrast_logcpmRUVg_0.05FDR.csv")
+ 
+ 
+#---------- TET2
+ 
+TET2_cpm <- data.frame(t(PDvsCTRL_iDANs[grepl("TET2",PDvsCTRL_iDANs$SYMBOL),8:43]))
+TET2_cpm <- cbind(rep(c("CTRL_fibroblasts", "CTRL_iDANs", "PD_fibroblasts","PD_iDANs"),times=c(10,8,9,9)),TET2_cpm)
+colnames(TET2_cpm) <-c("Condition","Tet2")
+TET2_cpm$Condition <- factor(TET2_cpm$Condition, levels=c("CTRL_fibroblasts", "PD_fibroblasts", "CTRL_iDANs", "PD_iDANs"))
+ 
+ggplot(data=TET2_cpm, aes(x=Condition, y=Tet2, colour=Condition)) +
+geom_boxplot() +
+geom_dotplot(aes(fill=Condition), binaxis='y', stackdir='center', dotsize=0.5) +
+scale_color_brewer(palette="Dark2") +
+scale_fill_brewer(palette="Dark2") +
+scale_y_continuous(limits=c(20,80), breaks=seq(20,80,10), expand=c(0,0)) +
+labs(title="Celltypes",x="",y="TET2 (cpm)") +
+theme_classic()
+ 
+TET2_RUVglogcpm <- data.frame(t(PDvsCTRL_iDANs_RUVg[grepl("TET2",PDvsCTRL_iDANs_RUVg$SYMBOL),8:43]))
+TET2_RUVglogcpm <- cbind(rep(c("CTRL_fibroblasts", "CTRL_iDANs", "PD_fibroblasts","PD_iDANs"),times=c(10,8,9,9)),TET2_RUVglogcpm)
+colnames(TET2_RUVglogcpm) <-c("Condition","Tet2")
+TET2_RUVglogcpm$Condition <- factor(TET2_RUVglogcpm$Condition, levels=c("CTRL_fibroblasts", "PD_fibroblasts", "CTRL_iDANs", "PD_iDANs"))
+ 
+ggplot(data=TET2_RUVglogcpm, aes(x=Condition, y=Tet2, colour=Condition)) +
+geom_boxplot() +
+geom_dotplot(aes(fill=Condition), binaxis='y', stackdir='center', dotsize=0.5) +
+scale_color_brewer(palette="Dark2") +
+scale_fill_brewer(palette="Dark2") +
+scale_y_continuous(limits=c(4.6,5.8), breaks=seq(4.6,5.8,0.2), expand=c(0,0)) +
+labs(title="DA Neurons", x="",y="TET2 RUVg Adjusted (logcpm)") +
+theme_classic()
 
 
 #------------------------------ PD isolated neuronal stem cells 
 
+#--------- Extract Counts
+ 
+for i in `ls *csv` ; do awk -v OFS='\t' -F'[_;]' 'NR>1{print $1,$4}' ${i} > ${i}.tsv ; done
+while read line ; do mv $(awk '{print $1".tsv",$2}' <<<$line) ; done < names
+ 
+for i in `cat names` ;
+do if [ $i == "SVZ_043" ] ;
+then awk -v OFS='\t' 'BEGIN{print "GENES","'${i}'"}{print $0}' ${i} > counts ;
+else awk -v OFS='\t' 'BEGIN{print "'${i}'"}{print $2}' ${i} > counts1 ;
+paste counts counts1 > counts2 ;
+mv counts2 counts;
+fi ;
+done
+ 
+#---------- EdgeR
+
+rm(list=ls(all=TRUE))
+if (!requireNamespace("BiocManager", quietly = TRUE)) + install.packages("BiocManager")
+BiocManager::install("dendextend", version = "3.8")
+ 
+library(edgeR)
+library(readr)
+library(ggfortify)
+library(dendextend)
+library(reshape2)
+library(ExpressionNormalizationWorkflow)
+library(sva)
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+library(RColorBrewer)
+library(RUVSeq)
+ 
+#---------- Import
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_GEO_models/GSE130752_PDvsCTRL_human_NScs_microglia/paper")
+covar <- read_delim("covar.csv",",",escape_double=FALSE,trim_ws=TRUE)
+rownames(covar) <- covar$SAMPLE
+ 
+#---------- Counts
+ 
+counts <- read_delim("rawcounts/counts.tsv", "\t", escape_double = FALSE, trim_ws = TRUE)
+counts <- aggregate(counts[,2:23],by=counts[,1],sum)
+rownames(counts) <- counts$GENES
+counts <- counts[,-1]
+counts <- counts[complete.cases(counts),]
+ 
+#---------- DGEList 
+ 
+y <- DGEList(counts, group=covar$GROUP)
+ 
+#---------- Filtering
+ 
+y <- y[rowSums(cpm(y)>1) >= ncol(counts)-1, , keep.lib.sizes=FALSE]
+dim(y) [1] 8328 22
+ 
+#---------- TMM Normalization
+ 
+y <- calcNormFactors(y,method="TMM")
+ 
+#---------- CPM
+ 
+cpm <- cpm(y,normalized.lib.sizes=TRUE, log=FALSE)
+write.csv(cpm,file="cpm.csv")
+logcpm <- cpm(y,normalized.lib.sizes=TRUE, log=TRUE)
+write.csv(logcpm, file="logcpm.csv")
+ 
+#------- Pearsons Correlation
+ 
+correl <- cor(logcpm, method ="pearson")
+correl <- melt(correl, na.rm = TRUE)
+mean(correl$value,na.rm=FALSE)
+library(corrplot)
+colramp <- colorRampPalette(c("#053061","#2166AC","#4393C3","#92C5DE","#D1E5F0","#FFFFFF", "#FDDBC7", "#F4A582", "#D6604D", "#B2182B", "#67001F"))
+corrplot(correl, method="circle", col = colramp(200), title = "Pearson Correlation",mar = c(1, 1, 2, 1), order="hclust", addrect=2,tl.cex = 0.4,tl.col = "black")
+ 
+#---------- Outliers Below correlation >= 0.9
+ 
+aggregate(correl$value, by=list(Category=correl$Var2), FUN=mean)
+ 
+#---------- PCA Plots
+ 
+library(RColorBrewer)
+colors <- brewer.pal(6, "Set2")
+plotPCA(logcpm, k=2, labels=TRUE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], cex=1)
+plotPCA(logcpm, k=2, labels=FALSE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], pch=c(15,16,17)[as.factor(covar$CELLTYPE)], plot3d=TRUE)
+ 
+#----------- ExpressionNormalizationWorkflow
+ 
+expSet <- expSetobj(logcpm,covar)
+ 
+#---------- PVCA
+ 
+pvcAnaly(expSet, 0.75, c("DISEASE","CELLTYPE","AGE","SEX"))
+ 
+#---------- EdgeR
+ 
+design <- model.matrix(~ 0 + GROUP + AGE + SEX, data=covar)
+colnames(design)[1:6] <- c("CTRL_Microglia", "CTRL_NSCs", "CTRL_SVZ", "PD_Microglia", "PD_NSCs", "PD_SVZ")
+ 
+#---------- Estimate Dispersion
+ 
+y <- estimateDisp(y, design)
+
+#---------- Quasi-likelihood Fit
+ 
+fit <- glmQLFit(y, design)
+
+#---------- Contrast
+ 
+SVZ <- makeContrasts(PD_SVZ-CTRL_SVZ, levels=design)
+NSCs <- makeContrasts(PD_NSCs-CTRL_NSCs, levels=design)
+Microglia <- makeContrasts(PD_Microglia-CTRL_Microglia, levels=design)
+ 
+#--------- Quasi-likelihood FTest
+ 
+PDvsCTRL_SVZ <- glmQLFTest(fit, contrast=SVZ)
+PDvsCTRL_SVZ <- topTags(PDvsCTRL_SVZ, n=Inf, adjust.method="BH", sort="none")$table
+ 
+PDvsCTRL_NSCs <- glmQLFTest(fit, contrast=NSCs)
+PDvsCTRL_NSCs <- topTags(PDvsCTRL_NSCs, n=Inf, adjust.method="BH", sort="none")$table
+ 
+PDvsCTRL_Microglia <- glmQLFTest(fit, contrast=Microglia)
+PDvsCTRL_Microglia <- topTags(PDvsCTRL_Microglia, n=Inf, adjust.method="BH", sort="none")$table
+ 
+#---------- Change Names to Entrez
+ 
+columns(org.Hs.eg.db)
+ 
+PDvsCTRL_SVZ$SYMBOL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_SVZ), column="SYMBOL", keytype="SYMBOL", multiVals="first")
+PDvsCTRL_SVZ$ENSEMBL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_SVZ), column="ENSEMBL", keytype="SYMBOL", multiVals="first")
+PDvsCTRL_SVZ$ENTREZID <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_SVZ), column="ENTREZID", keytype="SYMBOL", multiVals="first")
+ 
+PDvsCTRL_NSCs$SYMBOL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_NSCs), column="SYMBOL", keytype="SYMBOL", multiVals="first")
+PDvsCTRL_NSCs$ENSEMBL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_NSCs), column="ENSEMBL", keytype="SYMBOL", multiVals="first")
+PDvsCTRL_NSCs$ENTREZID <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_NSCs), column="ENTREZID", keytype="SYMBOL", multiVals="first")
+ 
+PDvsCTRL_Microglia$SYMBOL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_Microglia), column="SYMBOL", keytype="SYMBOL", multiVals="first")
+PDvsCTRL_Microglia$ENSEMBL <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_Microglia), column="ENSEMBL", keytype="SYMBOL", multiVals="first")
+PDvsCTRL_Microglia$ENTREZID <- mapIds(org.Hs.eg.db, keys=row.names(PDvsCTRL_Microglia), column="ENTREZID", keytype="SYMBOL", multiVals="first")
+ 
+#---------- combine gene names & cpm counts
+ 
+PDvsCTRL_SVZ <- cbind(PDvsCTRL_SVZ, cpm)
+write.csv(PDvsCTRL_SVZ, file="SVZ_RNAseq_glmQLF_PDvsCTRL_Age_Sex_contrast_cpm.csv")
+ 
+PDvsCTRL_NSCs <- cbind(PDvsCTRL_NSCs, cpm)
+write.csv(PDvsCTRL_NSCs, file="NSCs_RNAseq_glmQLF_PDvsCTRL_Age_Sex_contrast_cpm.csv")
+ 
+PDvsCTRL_Microglia <- cbind(PDvsCTRL_Microglia, cpm)
+write.csv(PDvsCTRL_Microglia, file="Microglia_RNAseq_glmQLF_PDvsCTRL_Age_Sex_contrast_cpm.csv")
+ 
+#---------- Filter FDR <= 0.05
+ 
+PDvsCTRL_SVZ_FDR <- PDvsCTRL_SVZ[PDvsCTRL_SVZ$FDR <= 0.05,]
+write.csv(PDvsCTRL_SVZ_FDR, file="SVZ_RNAseq_glmQLF_PDvsCTRL_Age_Sex_contrast_cpm_0.05FDR.csv")
+ 
+PDvsCTRL_NSCs_FDR <- PDvsCTRL_NSCs[PDvsCTRL_NSCs$FDR <= 0.05,]
+write.csv(PDvsCTRL_NSCs_FDR, file="NSCs_RNAseq_glmQLF_PDvsCTRL_Age_Sex_contrast_cpm_0.05FDR.csv")
+ 
+PDvsCTRL_Microglia_FDR <- PDvsCTRL_Microglia[PDvsCTRL_Microglia$FDR <= 0.05,]
+write.csv(PDvsCTRL_Microglia_FDR, file="Microglia_RNAseq_glmQLF_PDvsCTRL_Age_Sex_contrast_cpm_0.05FDR.csv")
+ 
+#---------- TET2
+ 
+TET2_cpm <- data.frame(t(PDvsCTRL_SVZ[grepl("TET2",PDvsCTRL_SVZ$SYMBOL),-1:-8]))
+TET2_cpm <- cbind(covar$GROUP, TET2_cpm)
+colnames(TET2_cpm) <-c("Condition","Tet2")
+TET2_cpm$Condition <- factor(TET2_cpm$Condition, levels=c("CTRL_SVZ", "PD_SVZ", "CTRL_NSCs", "PD_NSCs", "CTRL_Microglia", "PD_Microglia"))
+ 
+ggplot(data=TET2_cpm, aes(x=Condition, y=Tet2, colour=Condition)) +
+geom_boxplot() +
+geom_dotplot(aes(fill=Condition), binaxis='y', stackdir='center', dotsize=0.5) +
+scale_color_brewer(palette="Dark2") +
+scale_fill_brewer(palette="Dark2") +
+scale_y_continuous(limits=c(0,280), breaks=seq(0,280,40), expand=c(0,0)) +
+labs(title="Celltypes",x="",y="TET2 (cpm)") +
+theme_classic()
 
 #------------------------------ MPTP midbrain dopaminergic neurons 
 
+#------- EdgeR
 
+rm(list=ls(all=TRUE))
+if (!requireNamespace("BiocManager", quietly = TRUE)) + install.packages("BiocManager")
+BiocManager::install("dendextend", version = "3.8")
+ 
+library(edgeR)
+library(readr)
+library(ggfortify)
+library(dendextend)
+library(reshape2)
+library(ExpressionNormalizationWorkflow)
+library(sva)
+library("AnnotationDbi")
+library("org.Mm.eg.db")
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+library(RColorBrewer)
+library(RUVSeq)
+ 
+#---------- Import
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_GEO_models/GSE54795_MPTP_Midbrain_DAneurons_RNAseq")
+covar <- read_delim("covar.csv",",",escape_double=FALSE,trim_ws=TRUE)
+rownames(covar) <- covar$SAMPLE
+ 
+#---------- Counts
+ 
+rawcounts <- read_delim("GSE54795_RNASEQ_counts_DAneurons_SN_MPTPvsSaline_mm10.txt","\t",escape_double=FALSE,trim_ws=TRUE)
+counts <- rawcounts[,-1:-2]
+rownames(counts) <- rawcounts$Entrez
+ 
+#---------- DGEList 
+ 
+y <- DGEList(counts, group=covar$GROUP)
+ 
+#---------- Filtering
+ 
+y <- y[rowSums(cpm(y)>1) >= ncol(counts), , keep.lib.sizes=FALSE]
+dim(y) #[1] 12950     8
+ 
+#---------- TMM Normalization
+ 
+y <- calcNormFactors(y,method="TMM")
+ 
+#---------- CPM
+ 
+cpm <- cpm(y,normalized.lib.sizes=TRUE, log=FALSE)
+write.csv(cpm,file="cpm.csv")
+logcpm <- cpm(y,normalized.lib.sizes=TRUE, log=TRUE)
+write.csv(logcpm, file="logcpm.csv")
+ 
+#------- Pearsons Correlation
+ 
+correl <- cor(logcpm, method ="pearson")
+correl <- melt(correl, na.rm = TRUE)
+mean(correl$value,na.rm=FALSE)
+# 0.9868198
+ 
+#---------- Outliers Below correlation >= 0.9
+ 
+aggregate(correl$value, by=list(Category=correl$Var2), FUN=mean)
+ 
+#---------- PCA Plots
+ 
+library(RColorBrewer)
+colors <- brewer.pal(4, "Set2")
+plotPCA(logcpm, k=2, labels=TRUE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], cex=1)
+plotPCA(logcpm, k=2, labels=FALSE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], pch=c(15,16)[as.factor(covar$GROUP)], plot3d=TRUE)
+ 
+#----------- ExpressionNormalizationWorkflow
+ 
+expSet <- expSetobj(logcpm,covar)
+ 
+#---------- PVCA
+ 
+pvcAnaly(expSet, 0.75, c("GROUP"))
+ 
+#---------- EdgeR
+ 
+design <- model.matrix(~ GROUP, data=covar) 
+ 
+#---------- Estimate Dispersion
+ 
+y <- estimateDisp(y, design)
+
+#---------- Quasi-likelihood Fit
+ 
+fit <- glmQLFit(y, design)
+
+#--------- Quasi-likelihood FTest
+ 
+qlf <- glmQLFTest(fit,coef=2)
+qlf <- topTags(qlf, n=Inf, adjust.method="BH", sort="none")$table
+ 
+#---------- Change Names to Entrez
+ 
+columns(org.Mm.eg.db)
+qlf$symbol <- mapIds(org.Mm.eg.db, keys=row.names(qlf), column="SYMBOL", keytype="ENTREZID", multiVals="first")
+qlf$ENSEMBL <- mapIds(org.Mm.eg.db, keys=row.names(qlf), column="ENSEMBL", keytype="ENTREZID", multiVals="first")
+ 
+#---------- combine gene names & cpm counts
+ 
+qlf <- cbind(qlf,cpm)
+write.csv(qlf, file="Mouse_DAneurons_RNAseq_glmQLF_MPTPvsSaline_cpm.csv")
+ 
+#---------- Filter FDR <= 0.05
+ 
+qlf_FDR <- qlf[qlf$FDR <= 0.05,]
+write.csv(qlf_FDR, file="Mouse_DAneurons_RNAseq_glmQLF_MPTPvsSaline_cpm_0.05FDR.csv")
+ 
+#--------- EdgeR RUVseq
+ 
+empirical <- qlf$PValue >= 0.5
+ 
+#---------- RUVg
+ 
+logcpm_ruvg <- RUVg(logcpm, empirical, k=1, isLog=TRUE)$normalizedCounts
+covar$RUVg <- round(RUVg(logcpm, empirical, k=1, isLog=TRUE)$W, digits=3)
+ 
+#---------- PCA
+ 
+plotPCA(logcpm_ruvg, k=2, labels=TRUE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], cex=1)
+plotPCA(logcpm_ruvg, k=2, labels=FALSE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], pch=c(15,16)[as.factor(covar$GROUP)])
+ 
+#---------- Design
+ 
+design1 <- model.matrix(~ GROUP + RUVg, data=covar)
+
+#---------- Estimate Dispersion
+ 
+y1 <- estimateDisp(y, design1)
+ 
+#---------- Quasi-likelihood Fit
+ 
+fit1 <- glmQLFit(y1, design1)
+ 
+#--------- Quasi-likelihood FTest
+ 
+qlf1 <- glmQLFTest(fit1,coef=2)
+qlf1 <- topTags(qlf1, n=Inf, adjust.method="BH", sort="none")$table
+ 
+#---------- Change Names to Entrez
+ 
+columns(org.Mm.eg.db)
+qlf1$symbol <- mapIds(org.Mm.eg.db, keys=row.names(qlf1), column="SYMBOL", keytype="ENTREZID", multiVals="first")
+qlf1$ENSEMBL <- mapIds(org.Mm.eg.db, keys=row.names(qlf1), column="ENSEMBL", keytype="ENTREZID", multiVals="first")
+ 
+#---------- combine gene names & cpm counts
+ 
+qlf1 <- cbind(qlf1,logcpm_ruvg)
+write.csv(qlf1, file="Mouse_DAneurons_RNAseq_glmQLF_MPTPvsSaline_RUVg_logcpmRUVg.csv")
+ 
+#---------- Filter FDR <= 0.1
+ 
+qlf1_FDR <- qlf1[qlf1$FDR <= 0.05,]
+write.csv(qlf1_FDR, file="Mouse_DAneurons_RNAseq_glmQLF_MPTPvsSaline_RUVg_logcpmRUVg_0.05FDR.csv")
+ 
+#---------- TET2
+ 
+TET2_cpm <- data.frame(t(qlf[grepl("Tet2",qlf$symbol),8:15]))
+TET2_cpm <- cbind(rep(c("MPTP","Saline"),each=4),TET2_cpm)
+colnames(TET2_cpm) <-c("Condition","Tet2")
+TET2_cpm$Condition <- factor(TET2_cpm$Condition, levels=c("Saline","MPTP"))
+ 
+ggplot(data=TET2_cpm, aes(x=Condition, y=Tet2, colour=Condition)) +
+geom_boxplot() +
+geom_dotplot(aes(fill=Condition), binaxis='y', stackdir='center', dotsize=0.5) +
+scale_color_brewer(palette="Dark2") +
+scale_fill_brewer(palette="Dark2") +
+scale_y_continuous(limits=c(60,160), breaks=seq(60,160,20), expand=c(0,0)) +
+labs(title="DA Neurons",x="",y="TET2 (cpm)") +
+theme_classic()
+ 
+TET2_RUVglogcpm <- data.frame(t(qlf1[grepl("Tet2",qlf1$symbol),8:15]))
+TET2_RUVglogcpm <- cbind(rep(c("MPTP","Saline"),each=4),TET2_RUVglogcpm)
+colnames(TET2_RUVglogcpm) <-c("Condition","Tet2")
+TET2_RUVglogcpm$Condition <- factor(TET2_RUVglogcpm$Condition, levels=c("Saline","MPTP"))
+ 
+ggplot(data=TET2_RUVglogcpm, aes(x=Condition, y=Tet2, colour=Condition)) +
+geom_boxplot() +
+geom_dotplot(aes(fill=Condition), binaxis='y', stackdir='center', dotsize=0.5) +
+scale_color_brewer(palette="Dark2") +
+scale_fill_brewer(palette="Dark2") +
+scale_y_continuous(limits=c(6,7.4), breaks=seq(6,7.4,0.2), expand=c(0,0)) +
+labs(title="DA Neurons", x="",y="TET2 RUVg Adjusted (logcpm)") +
+theme_classic()
 
 #------------------------------ 6-OHDA midbrain dopaminergic neurons 
 
+#-------- EdgeR
 
+rm(list=ls(all=TRUE))
+if (!requireNamespace("BiocManager", quietly = TRUE)) + install.packages("BiocManager")
+BiocManager::install("dendextend", version = "3.8")
+ 
+library(edgeR)
+library(readr)
+library(ggfortify)
+library(dendextend)
+library(reshape2)
+library(ExpressionNormalizationWorkflow)
+library(sva)
+library("AnnotationDbi")
+library("org.Mm.eg.db")
+library(calibrate)
+library(gplots)
+library(viridis)
+library(vegan)
+library(pheatmap)
+library(RColorBrewer)
+library(RUVSeq)
+ 
+#---------- Import
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_GEO_models/GSE108370_6OHDA_Midbrain_DAneurons_RNAseq")
+covar_all <- read_delim("covar.csv",",",escape_double=FALSE,trim_ws=TRUE)
+rownames(covar_all) <- covar_all$SAMPLE
+covar <- covar_all[covar_all$TRAP == "mDA",]
+rownames(covar) <- covar$SAMPLE
+ 
+#---------- Counts
+ 
+rawcounts <- read_delim("GSE108370_6ohda_trap_processed.csv",",",escape_double=FALSE,trim_ws=TRUE)
+rawcounts <- rawcounts[!duplicated(rawcounts$Genes),]
+counts_all <- rawcounts[,-1]
+rownames(counts_all) <- rawcounts$Genes
+counts <- counts[,covar_all$TRAP == "mDA"]
+rownames(counts) <- rawcounts$Genes
+ 
+#---------- DGEList 
+ 
+y <- DGEList(counts, group=covar$GROUP)
+ 
+#---------- Filtering
+ 
+y <- y[rowSums(cpm(y)>1) >= ncol(counts), , keep.lib.sizes=FALSE]
+dim(y) #[1] 12469    10
+ 
+#---------- TMM Normalization
+ 
+y <- calcNormFactors(y,method="TMM")
+ 
+#---------- CPM
+ 
+cpm <- cpm(y,normalized.lib.sizes=TRUE, log=FALSE)
+write.csv(cpm,file="cpm.csv")
+logcpm <- cpm(y,normalized.lib.sizes=TRUE, log=TRUE)
+write.csv(logcpm, file="logcpm.csv")
+ 
+#------- Pearsons Correlation
+ 
+correl <- cor(logcpm, method ="pearson")
+correl <- melt(correl, na.rm = TRUE)
+mean(correl$value,na.rm=FALSE)
+# 0.98406
+ 
+#---------- Outliers Below correlation >= 0.9
+ 
+aggregate(correl$value, by=list(Category=correl$Var2), FUN=mean)
+ 
+#---------- PCA Plots
+ 
+library(RColorBrewer)
+colors <- brewer.pal(4, "Set2")
+plotPCA(logcpm, k=2, labels=TRUE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], cex=1)
+plotPCA(logcpm, k=2, labels=FALSE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], pch=c(15,16,17,18,19)[as.factor(covar$Mice)], plot3d=TRUE)
+ 
+#---------- ExpressionNormalizationWorkflow
+ 
+expSet <- expSetobj(logcpm,covar)
+ 
+#---------- PVCA
+ 
+pvcAnaly(expSet, 0.75, c("GROUP","Mice"))
+  
+#--------- EdgeR
+ 
+design <- model.matrix(~ GROUP + Mice, data=covar) 
+ 
+#---------- Estimate Dispersion
+ 
+y <- estimateDisp(y, design)
+
+#---------- Quasi-likelihood Fit
+ 
+fit <- glmQLFit(y, design)
+
+#--------- Quasi-likelihood FTest
+ 
+qlf <- glmQLFTest(fit,coef=2)
+qlf <- topTags(qlf, n=Inf, adjust.method="BH", sort="none")$table
+ 
+#---------- Change Names to Entrez
+ 
+columns(org.Mm.eg.db)
+qlf$SYMBOL <- mapIds(org.Mm.eg.db, keys=row.names(qlf), column="SYMBOL", keytype="SYMBOL", multiVals="first")
+qlf$ENTREZID <- mapIds(org.Mm.eg.db, keys=row.names(qlf), column="ENTREZID", keytype="SYMBOL", multiVals="first")
+qlf$ENSEMBL <- mapIds(org.Mm.eg.db, keys=row.names(qlf), column="ENSEMBL", keytype="SYMBOL", multiVals="first")
+ 
+#---------- combine gene names & cpm counts
+ 
+qlf <- cbind(qlf,cpm)
+write.csv(qlf, file="Mouse_DAneurons_RNAseq_glmQLF_6OHDA_mice_cpm.csv")
+ 
+#---------- Filter FDR <= 0.05
+ 
+qlf_FDR <- qlf[qlf$FDR <= 0.05,]
+write.csv(qlf_FDR, file="Mouse_DAneurons_RNAseq_glmQLF_6OHDA_mice_cpm_0.05FDR.csv")
+ 
+#---------- EdgeR RUVseq
+ 
+empirical <- qlf$PValue >= 0.5
+ 
+#---------- RUVg
+ 
+logcpm_ruvg <- RUVg(logcpm, empirical, k=1, isLog=TRUE)$normalizedCounts
+covar$RUVg <- round(RUVg(logcpm, empirical, k=1, isLog=TRUE)$W, digits=3)
+ 
+#---------- PCA
+ 
+plotPCA(logcpm_ruvg, k=2, labels=TRUE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], cex=1)
+plotPCA(logcpm_ruvg, k=2, labels=FALSE, isLog=TRUE, col=colors[as.factor(covar$GROUP)], pch=c(15,16,17,18,19)[as.factor(covar$Mice)])
+ 
+#---------- Expression Set
+ 
+expSet <- expSetobj(logcpm_ruvg,covar)
+ 
+#---------- PVCA
+ 
+pvcAnaly(expSet, 0.75, c("GROUP","Mice"))
+ 
+#---------- Design
+ 
+design1 <- model.matrix(~ GROUP + Mice + RUVg, data=covar)
+
+#---------- Estimate Dispersion
+ 
+y1 <- estimateDisp(y, design1)
+ 
+#---------- Quasi-likelihood Fit
+ 
+fit1 <- glmQLFit(y1, design1)
+ 
+#--------- Quasi-likelihood FTest
+ 
+qlf1 <- glmQLFTest(fit1,coef=2)
+qlf1 <- topTags(qlf1, n=Inf, adjust.method="BH", sort="none")$table
+ 
+#---------- Change Names to Entrez
+ 
+columns(org.Mm.eg.db)
+qlf1$SYMBOL <- mapIds(org.Mm.eg.db, keys=row.names(qlf1), column="SYMBOL", keytype="SYMBOL", multiVals="first")
+qlf1$ENTREZID <- mapIds(org.Mm.eg.db, keys=row.names(qlf1), column="ENTREZID", keytype="SYMBOL", multiVals="first")
+qlf1$ENSEMBL <- mapIds(org.Mm.eg.db, keys=row.names(qlf1), column="ENSEMBL", keytype="SYMBOL", multiVals="first")
+ 
+#---------- combine gene names & cpm counts
+ 
+qlf1 <- cbind(qlf1,logcpm_ruvg)
+write.csv(qlf1, file="Mouse_DAneurons_RNAseq_glmQLF_6OHDA_mice_RUVg_logcpmRUVg.csv")
+ 
+#---------- Filter FDR <= 0.1
+ 
+qlf1_FDR <- qlf1[qlf1$FDR <= 0.05,]
+write.csv(qlf1_FDR, file="Mouse_DAneurons_RNAseq_glmQLF_6OHDA_mice_RUVg_logcpmRUVg_0.05FDR.csv")
+ 
+#---------- TET2
+ 
+TET2_cpm <- data.frame(t(qlf[grepl("Tet2",qlf$SYMBOL),9:18]))
+TET2_cpm <- cbind(rep(c("6OHDA_Side","no6OHDA_Side"),each=5),TET2_cpm)
+colnames(TET2_cpm) <-c("Condition","Tet2")
+TET2_cpm$Condition <- factor(TET2_cpm$Condition, levels=c("6OHDA_Side","no6OHDA_Side"))
+ 
+ggplot(data=TET2_cpm, aes(x=Condition, y=Tet2, colour=Condition)) +
+geom_boxplot() +
+geom_dotplot(aes(fill=Condition), binaxis='y', stackdir='center', dotsize=0.5) +
+scale_color_brewer(palette="Dark2") +
+scale_fill_brewer(palette="Dark2") +
+scale_y_continuous(limits=c(18,32), breaks=seq(18,32,2), expand=c(0,0)) +
+labs(title="DA Neurons",x="",y="TET2 (cpm)") +
+theme_classic()
+ 
+TET2_RUVglogcpm <- data.frame(t(qlf1[grepl("Tet2",qlf1$SYMBOL),9:18]))
+TET2_RUVglogcpm <- cbind(rep(c("6OHDA_Side","no6OHDA_Side"),each=5),TET2_RUVglogcpm)
+colnames(TET2_RUVglogcpm) <-c("Condition","Tet2")
+TET2_RUVglogcpm$Condition <- factor(TET2_RUVglogcpm$Condition, levels=c("6OHDA_Side","no6OHDA_Side"))
+ 
+ggplot(data=TET2_RUVglogcpm, aes(x=Condition, y=Tet2, colour=Condition)) +
+geom_boxplot() +
+geom_dotplot(aes(fill=Condition), binaxis='y', stackdir='center', dotsize=0.5) +
+scale_color_brewer(palette="Dark2") +
+scale_fill_brewer(palette="Dark2") +
+scale_y_continuous(limits=c(4.2,5.2), breaks=seq(4.2,5.2,0.2), expand=c(0,0)) +
+labs(title="DA Neurons", x="",y="TET2 RUVg Adjusted (logcpm)") +
+theme_classic()
 
