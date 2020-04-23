@@ -1,0 +1,294 @@
+#---------------------------------------- PD Medication
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/DMC_Medication")
+library("methylKit")
+library("gtools")
+library(readr)
+library("DEGreport"
+covar <- read_delim("covar.csv", ",", escape_double=FALSE, trim_ws=TRUE)
+
+PDvsCTRL <- read_csv("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU.csv")
+PDvsCTRL_pval <- PDvsCTRL[PDvsCTRL$pvalue <= 0.05,]
+PDvsCTRL_FDR <- PDvsCTRL[PDvsCTRL$qvalue <= 0.05,]
+ 
+#---------- Methylkit
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/CXreports")
+CX <- data.frame(paste(covar$SAMPLE, "Sort_30xCov_Target_Outliers_RepAvg_30na_rm0_SNP", sep="_"))
+names(CX) <- "CXreports"
+CX <- as.list(as.character(CX[,1]))
+Group <- as.numeric(as.character(factor(covar$Group, labels=c(0,1))))
+methyl <- methRead(location=CX, sample.id=as.list(covar$SAMPLE), assembly="hg19", treatment=Group, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+methylu=unite(methyl, destrand=FALSE, min.per.group=1L, mc.cores=6)
+methylunite <- as.data.frame(as(methylu,"GRanges")) 
+methylunite <- methylunite[order(methylunite$start),]
+methylunite <- methylunite[mixedorder(methylunite$seqnames),]
+
+#---------------------------------------- Medication DMCs
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/DMC_Medication")
+covar <- read_delim("covar.csv", ",", escape_double=FALSE, trim_ws=TRUE)
+covar_PD <- covar[covar$Group == "PD",]
+PDvsCTRL <- read_csv("../DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU.csv")
+PDvsCTRL_pval <- PDvsCTRL[PDvsCTRL$pvalue <= 0.05,]
+PDvsCTRL_FDR <- PDvsCTRL[PDvsCTRL$qvalue <= 0.05,]
+rownames(PDvsCTRL_FDR) <- paste(PDvsCTRL_FDR$seqnames, PDvsCTRL_FDR$start, sep="_")
+covariates <- covar[,c(9,10,11,12,17,19,20,21,22)]
+degCorCov(covariates)
+ 
+#---------- Methylkit
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/CXreports")
+CX <- data.frame(paste(covar_PD$SAMPLE, "Sort_30xCov_Target_Outliers_RepAvg_30na_rm0_SNP", sep="_"))
+names(CX) <- "CXreports"
+CX <- as.list(as.character(CX[,1]))
+ 
+#---------- MOAD_Inhibitors
+ 
+moad <- as.numeric(as.character(factor(covar_PD$MOAD_Inhibitors, labels=c(0,1))))
+moad <- methRead(location=CX, sample.id=as.list(covar_PD$SAMPLE), assembly="hg19", treatment=moad, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+moad_u=unite(moad, destrand=FALSE, min.per.group=1L, mc.cores=6)
+moad_design <- data.frame(model.matrix(~ MOAD_Inhibitors + AGE + SEX + PMI + proportions_GLU, data=covar_PD))
+moad_design <- moad_design[,-1:-2]
+moad_Diff <- calculateDiffMeth(moad_u, covariates=moad_design, overdispersion="MN", adjust="fdr", test="Chisq", mc.cores=6)
+ 
+PDmoad <- as.data.frame(as(moad_Diff,"GRanges")) 
+PDmoad$seqnames <- as.character(PDmoad$seqnames)
+PDmoad <- PDmoad[order(PDmoad$start),]
+PDmoad <- PDmoad[mixedorder(PDmoad$seqnames),]
+rownames(PDmoad) <- paste(PDmoad$seqnames, PDmoad$start, sep="_")
+write.csv(PDmoad,"Methylkit_PDonly_MOAD_Inhibitors_age_sex_pmi_propGLU.csv",row.names=FALSE)
+PDmoad_pval <- PDmoad[PDmoad$pvalue <= 0.05,]
+write.csv(PDmoad_pval,"Methylkit_PDonly_MOAD_Inhibitors_age_sex_pmi_propGLU_0.05pval.csv",row.names=FALSE)
+PDmoad_FDR <- PDmoad[PDmoad$qvalue <= 0.05,]
+write.csv(PDmoad_FDR,"Methylkit_PDonly_MOAD_Inhibitors_age_sex_pmi_propGLU_0.05FDR.csv",row.names=FALSE)
+ 
+76093 PDmoad_pval
+637 PDmoad_FDR
+7649 length(intersect(rownames(PDvsCTRL_pval),rownames(PDmoad_pval)))
+2 length(intersect(rownames(PDvsCTRL_FDR),rownames(PDmoad_FDR)))
+ 
+summary(PDmoad$meth.diff > 0)
+summary(PDmoad_FDR$meth.diff > 0)
+enrichment <- data.frame(rbind(Background=c(452960, 451551),Significant=c(203, 434)))
+names(enrichment) <- c("Hypo","Hyper")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 2.144589
+p.value = 1.108472e-20
+ 
+#---------- Dopamine_Agonist
+ 
+agonist <- as.numeric(as.character(factor(covar_PD$Dopamine_Agonist, labels=c(0,1))))
+agonist <- methRead(location=CX, sample.id=as.list(covar_PD$SAMPLE), assembly="hg19", treatment=agonist, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+agonist_u=unite(agonist, destrand=FALSE, min.per.group=1L, mc.cores=6)
+agonist_design <- data.frame(model.matrix(~ Dopamine_Agonist + AGE + SEX + PMI + proportions_GLU, data=covar_PD))
+agonist_design <- agonist_design[,-1:-2]
+agonist_Diff <- calculateDiffMeth(agonist_u, covariates=agonist_design, overdispersion="MN", adjust="fdr", test="Chisq", mc.cores=6)
+ 
+PDagonist <- as.data.frame(as(agonist_Diff,"GRanges")) 
+PDagonist$seqnames <- as.character(PDagonist$seqnames)
+PDagonist <- PDagonist[order(PDagonist$start),]
+PDagonist <- PDagonist[mixedorder(PDagonist$seqnames),]
+rownames(PDagonist) <- paste(PDagonist$seqnames, PDagonist$start, sep="_")
+write.csv(PDagonist,"Methylkit_PDonly_Dopamine_Agonist_age_sex_pmi_propGLU.csv",row.names=FALSE)
+PDagonist_pval <- PDagonist[PDagonist$pvalue <= 0.05,]
+write.csv(PDagonist_pval,"Methylkit_PDonly_Dopamine_Agonist_age_sex_pmi_propGLU_0.05pval.csv",row.names=FALSE)
+PDagonist_FDR <- PDagonist[PDagonist$qvalue <= 0.05,]
+write.csv(PDagonist_FDR,"Methylkit_PDonly_Dopamine_Agonist_age_sex_pmi_propGLU_0.05FDR.csv",row.names=FALSE)
+ 
+73958 PDagonist_pval
+1362 PDagonist_FDR
+7903 length(intersect(rownames(PDvsCTRL_pval),rownames(PDagonist_pval)))
+4 length(intersect(rownames(PDvsCTRL_FDR),rownames(PDagonist_FDR)))
+ 
+summary(PDagonist$meth.diff > 0)
+summary(PDagonist_FDR$meth.diff > 0)
+enrichment <- data.frame(rbind(Background=c(422088, 482423),Significant=c(762, 600)))
+names(enrichment) <- c("Hypo","Hyper")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.68893
+p.value = 1
+ 
+#---------- COMT_Inhibitors
+ 
+comt <- as.numeric(as.character(factor(covar_PD$COMT_Inhibitors, labels=c(0,1))))
+comt <- methRead(location=CX, sample.id=as.list(covar_PD$SAMPLE), assembly="hg19", treatment=comt, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+comt_u=unite(comt, destrand=FALSE, min.per.group=1L, mc.cores=6)
+comt_design <- data.frame(model.matrix(~ COMT_Inhibitors + AGE + SEX + PMI + proportions_GLU, data=covar_PD))
+comt_design <- comt_design[,-1:-2]
+comt_Diff <- calculateDiffMeth(comt_u, covariates=comt_design, overdispersion="MN", adjust="fdr", test="Chisq", mc.cores=6)
+ 
+PDcomt <- as.data.frame(as(comt_Diff,"GRanges")) 
+PDcomt$seqnames <- as.character(PDcomt$seqnames)
+PDcomt <- PDcomt[order(PDcomt$start),]
+PDcomt <- PDcomt[mixedorder(PDcomt$seqnames),]
+rownames(PDcomt) <- paste(PDcomt$seqnames, PDcomt$start, sep="_")
+write.csv(PDcomt,"Methylkit_PDonly_COMT_Inhibitors_age_sex_pmi_propGLU.csv",row.names=FALSE)
+PDcomt_pval <- PDcomt[PDcomt$pvalue <= 0.05,]
+write.csv(PDcomt_pval,"Methylkit_PDonly_COMT_Inhibitors_age_sex_pmi_propGLU_0.05pval.csv",row.names=FALSE)
+PDcomt_FDR <- PDcomt[PDcomt$qvalue <= 0.05,]
+write.csv(PDcomt_FDR,"Methylkit_PDonly_COMT_Inhibitors_age_sex_pmi_propGLU_0.05FDR.csv",row.names=FALSE)
+ 
+75380 PDcomt_pval
+506 PDcomt_FDR
+7771 length(intersect(rownames(PDvsCTRL_pval),rownames(PDcomt_pval)))
+2 length(intersect(rownames(PDvsCTRL_FDR),rownames(PDcomt_FDR)))
+ 
+summary(PDcomt$meth.diff > 0)
+summary(PDcomt_FDR$meth.diff > 0)
+enrichment <- data.frame(rbind(Background=c(460372, 444139),Significant=c(235, 271)))
+names(enrichment) <- c("Hypo","Hyper")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 1.195338
+p.value = 0.02502
+ 
+
+#---------- Dopamine_Replacement
+ 
+replacement <- as.numeric(as.character(factor(covar_PD$Dopamine_Replacement, labels=c(0,1))))
+replacement <- methRead(location=CX, sample.id=as.list(covar_PD$SAMPLE), assembly="hg19", treatment=replacement, pipeline=list(fraction=FALSE, chr.col=2, start.col=3, end.col=3, coverage.col=5, strand.col=4, freqC.col=6))
+replacement_u=unite(replacement, destrand=FALSE, min.per.group=1L, mc.cores=6)
+replacement_design <- data.frame(model.matrix(~ Dopamine_Replacement + AGE + SEX + PMI + proportions_GLU, data=covar_PD))
+replacement_design <- replacement_design[,-1:-2]
+replacement_Diff <- calculateDiffMeth(replacement_u, covariates=replacement_design, overdispersion="MN", adjust="fdr", test="Chisq", mc.cores=6)
+
+PDreplacement <- as.data.frame(as(replacement_Diff,"GRanges")) 
+PDreplacement$seqnames <- as.character(PDreplacement$seqnames)
+PDreplacement <- PDreplacement[order(PDreplacement$start),]
+PDreplacement <- PDreplacement[mixedorder(PDreplacement$seqnames),]
+rownames(PDreplacement) <- paste(PDreplacement$seqnames, PDreplacement$start, sep="_")
+write.csv(PDreplacement,"Methylkit_PDonly_COMT_Inhibitors_age_sex_pmi_propGLU.csv",row.names=FALSE)
+PDreplacement_pval <- PDreplacement[PDreplacement$pvalue <= 0.05,]
+write.csv(PDreplacement_pval,"Methylkit_PDonly_Dopamine_Replacement_age_sex_pmi_propGLU_0.05pval.csv",row.names=FALSE)
+PDreplacement_FDR <- PDreplacement[PDreplacement$qvalue <= 0.05,]
+write.csv(PDreplacement_FDR,"Methylkit_PDonly_Dopamine_Replacement_age_sex_pmi_propGLU_0.05FDR.csv",row.names=FALSE)
+ 
+57731 PDreplacement_pval
+2742 PDreplacement_FDR
+6738 length(intersect(rownames(PDvsCTRL_pval),rownames(PDreplacement_pval)))
+3 length(intersect(rownames(PDvsCTRL_FDR),rownames(PDreplacement_FDR)))
+ 
+#---------- VennDiagram
+ 
+library(VennDiagram)
+1799 length(rownames(PDvsCTRL_FDR))
+637 length(rownames(PDmoad_FDR))
+1362 length(rownames(PDagonist_FDR))
+506 length(rownames(PDcomt_FDR))
+ 
+2 length(intersect(rownames(PDvsCTRL_FDR),rownames(PDmoad_FDR)))
+4 length(intersect(rownames(PDvsCTRL_FDR),rownames(PDagonist_FDR)))
+2 length(intersect(rownames(PDvsCTRL_FDR),rownames(PDcomt_FDR)))
+62 length(intersect(rownames(PDmoad_FDR),rownames(PDagonist_FDR)))
+11 length(intersect(rownames(PDmoad_FDR),rownames(PDcomt_FDR)))
+18 length(intersect(rownames(PDagonist_FDR),rownames(PDcomt_FDR)))
+ 
+0 length(Reduce(intersect, list(rownames(PDvsCTRL_FDR), rownames(PDmoad_FDR), rownames(PDagonist_FDR))))
+0 length(Reduce(intersect, list(rownames(PDvsCTRL_FDR), rownames(PDmoad_FDR), rownames(PDcomt_FDR))))
+0 length(Reduce(intersect, list(rownames(PDvsCTRL_FDR), rownames(PDagonist_FDR), rownames(PDcomt_FDR))))
+0 length(Reduce(intersect, list(rownames(PDvsCTRL_FDR), rownames(PDmoad_FDR), rownames(PDagonist_FDR), rownames(PDcomt_FDR))))
+ 
+grid.newpage()
+draw.quad.venn(area1=1799, area2=637, area3=1362, area4=506, n12=2, n13=4, n14=2, n23=62, n24=11, n34=18, n123=0, n124=0, n134=0, n234=0, n1234=0,
+category=c("PDvsCTRL_FDR", "PDmoad_FDR", "PDagonist_FDR", "PDcomt_FDR"), fill=c("orange", "red", "green", "blue"), lty=rep("blank",4), cex=2, cat.cex=2, cat.col=c("orange", "red", "green", "blue"))
+
+#---------------------------------------- Intersection L-dopa genes with PD Enhancer genes
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/DMC_Medication")
+Rat2Human_Ldopa_genes <- read_csv("Rat2Human_Ldopa_genes.txt", col_names=FALSE)
+2446 Rat_Ldopa_genes
+ 
+#-------- PD Enhancer genes
+ 
+PDvsCTRL_genes <- read_csv("../DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_HomerGreat_genes.tsv", col_names = FALSE)
+PDvsCTRL_FDR_genes <- read_csv("../DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU_0.05FDR_HomerGreat_genes.tsv", col_names = FALSE)
+9957 PDvsCTRL_genes
+2885 PDvsCTRL_FDR_genes
+ 
+#---------- Enriched L-dopa genes 
+
+550 length(intersect(Rat2Human_Ldopa_genes$X1,PDvsCTRL_FDR_genes$X1))
+enrichment <- data.frame(rbind(PDvsCTRL=c(9957-2885, 2885), Rat_Ldopa=c(2446-550, 550)))
+names(enrichment) <- c("Back","Sig")
+fisher.test(enrichment, alternative="greater")
+odds ratio = 0.7111029
+p-value = 1
+ 
+library(VennDiagram)
+grid.newpage()
+draw.pairwise.venn(2885, 2446, 550, category = c("PD", "L-Dopa"), lty = rep("blank",2), fill = c("blue", "red"), alpha = rep(0.5, 2), cat.pos = c(0,0), cat.dist = rep(0.025, 2))
+
+#---------------------------------------- PDvsCTRL Enrichment of Methylation at Enhancers
+ 
+setwd("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/DMC_Medication")
+covar <- read_delim("covar.csv", ",", escape_double=FALSE, trim_ws=TRUE)
+PDvsCTRL <- read_csv("/Volumes/projects_secondary/labrie/lee_marshall/PD/PD_Padlock_Enhancer/Torronto_CXreports/Methylkit/DMC/Methylkit_PDvsCTRL_age_sex_pmi_propGLU.csv")
+PDvsCTRL_pval <- PDvsCTRL[PDvsCTRL$pvalue <= 0.05,]
+PDvsCTRL_FDR <- PDvsCTRL[PDvsCTRL$qvalue <= 0.05,]
+rownames(PDvsCTRL_FDR) <- paste(PDvsCTRL_FDR$seqnames, PDvsCTRL_FDR$start, sep="_")
+PD_Probes <- read_delim("../../../Padlock_Enhancer_Probes/PD_Enh_Probes_merged.bed", "\t", escape_double=FALSE, col_names=FALSE, trim_ws=TRUE)
+PD_Probes$Name <- paste("Enhancer",seq(1:31590),sep="_")
+ 
+library("GenomicRanges")
+PDvsCTRL_FDR_GR <- GRanges(seqnames=PDvsCTRL_FDR$seqnames, IRanges(start=PDvsCTRL_FDR$start , end=PDvsCTRL_FDR$end))
+PDvsCTRL_pval_GR <- GRanges(seqnames=PDvsCTRL_pval$seqnames, IRanges(start=PDvsCTRL_pval$start , end=PDvsCTRL_pval$end))
+PDvsCTRL_GR <- GRanges(seqnames=PDvsCTRL$seqnames, IRanges(start=PDvsCTRL$start , end=PDvsCTRL$end))
+PD_Probes_GR <- GRanges(seqnames=PD_Probes$X1, IRanges(start=PD_Probes$X2 , end=PD_Probes$X3), Name=PD_Probes$Name)
+ 
+#---------- Remove Enhancers with no coverage
+ 
+PD_Probes$all <- countOverlaps(PD_Probes_GR, PDvsCTRL_GR)
+PD_Probes <- PD_Probes[PD_Probes$all != 0,]
+ 
+#---------- FDR enriched Enhancer
+ 
+PD_Probes$FDR <- countOverlaps(PD_Probes_GR, PDvsCTRL_FDR_GR)
+PD_Probes$FDR_fisher <- 0
+for (i in 1:nrow(PD_Probes)){
+o=as.numeric(PD_Probes[i,"all"])
+p=as.numeric(PD_Probes[i,"FDR"])
+enrichment <- data.frame(rbind(PDvsCTRL=c(904511-1799, 1799), Probe=c(o-p, p)))
+PD_Probes[i,]$FDR_fisher <- fisher.test(enrichment, alternative="greater")$p.value
+}
+ 
+PD_Probes$FDR_fisher_bh <- p.adjust(PD_Probes$FDR_fisher, method="BH")
+summary(PD_Probes$FDR_fisher <= 0.05) 236
+summary(PD_Probes$FDR_fisher_bh <= 0.05) 19
+summary(PD_Probes$FDR_fisher <= 0.05 & PD_Probes$FDR >1)
+ 
+#---------- PVAL enriched Enhancer
+ 
+PD_Probes$pval <- countOverlaps(PD_Probes_GR, PDvsCTRL_pval_GR)
+PD_Probes$pval_fisher <- 0
+for (i in 1:nrow(PD_Probes)){
+o=as.numeric(PD_Probes[i,"all"])
+p=as.numeric(PD_Probes[i,"pval"])
+enrichment <- data.frame(rbind(PDvsCTRL=c(904511-96323, 96323), Probe=c(o-p, p)))
+PD_Probes[i,]$pval_fisher <- fisher.test(enrichment, alternative="greater")$p.value
+}
+ 
+PD_Probes$pval_fisher_bh <- p.adjust(PD_Probes$pval_fisher, method="BH")
+summary(PD_Probes$pval_fisher <= 0.05) 1761
+summary(PD_Probes$pval_fisher_bh <= 0.05) 345
+ 
+#---------- 0.01 PVAL enriched Enhancer
+ 
+PDvsCTRL_0.01pval <- PDvsCTRL[PDvsCTRL$pvalue <= 0.01,]
+PDvsCTRL_0.01pval_GR <- GRanges(seqnames=PDvsCTRL_0.01pval$seqnames, IRanges(start=PDvsCTRL_0.01pval$start , end=PDvsCTRL_0.01pval$end))
+PD_Probes$pval0.01 <- countOverlaps(PD_Probes_GR, PDvsCTRL_0.01pval_GR)
+ 
+PD_Probes$pval0.01_fisher <- 0
+for (i in 1:nrow(PD_Probes)){
+o=as.numeric(PD_Probes[i,"all"])
+p=as.numeric(PD_Probes[i,"pval0.01"])
+enrichment <- data.frame(rbind(PDvsCTRL=c(904511-31001, 31001), Probe=c(o-p, p)))
+PD_Probes[i,]$pval0.01_fisher <- fisher.test(enrichment, alternative="greater")$p.value
+}
+ 
+PD_Probes$pval0.01_fisher_bh <- p.adjust(PD_Probes$pval0.01_fisher, method="BH")
+summary(PD_Probes$pval0.01_fisher <= 0.05) 1281
+summary(PD_Probes$pval0.01_fisher_bh <= 0.05) 260
+write.csv(PD_Probes, file="PD_Probes_Enhancers_PDvsCTRL_DMC_enrichment.csv", row.names=FALSE)
+
+
+
